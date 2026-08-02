@@ -1,0 +1,38 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+          xcrun -sdk iphoneos --show-sdk-version
+
+      - name: Install xtool
+        run: |
+          brew install xtool-org/tap/xtool
+          xtool --help
+
+      - name: Build unsigned .ipa
+        run: |
+          xtool dev build --ipa
+          find . -name "*.ipa" -o -name "*.app" | grep -v "\.build/checkouts" || true
+
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TeleprompterStudio-ipa
+          path: |
+            **/*.ipa
+          if-no-files-found: error
+          retention-days: 14
