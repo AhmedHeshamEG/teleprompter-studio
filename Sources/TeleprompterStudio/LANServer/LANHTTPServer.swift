@@ -95,9 +95,9 @@ final class LANHTTPServer {
         }
         if path == "/editor.css" { return staticResource(name: "editor", ext: "css") }
         if path == "/editor.js" { return staticResource(name: "editor", ext: "js") }
-        if path == "/marked.min.js" { return staticResource(name: "marked.min", ext: "js") }
+        if path == "/marked.min.js" { return sharedResource(name: "marked.min", ext: "js") }
         if path.hasPrefix("/katex/") {
-            return staticResource(subpath: path)
+            return sharedResource(subpath: path)
         }
 
         if path == "/api/scripts" {
@@ -151,9 +151,20 @@ final class LANHTTPServer {
         return .file(data: data, contentType: MIMEType.forPath("\(name).\(ext)"))
     }
 
-    private func staticResource(subpath: String) -> HTTPResponse {
+    /// `marked.min.js` and `katex/` are vendored once under `SharedWebResources` (shared with
+    /// the in-app WKWebView prompter) rather than duplicated per-consumer, since SwiftPM
+    /// requires resource basenames to be unique within a target even across subdirectories.
+    private func sharedResource(name: String, ext: String) -> HTTPResponse {
+        guard let url = Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "SharedWebResources"),
+              let data = try? Data(contentsOf: url) else {
+            return .notFound()
+        }
+        return .file(data: data, contentType: MIMEType.forPath("\(name).\(ext)"))
+    }
+
+    private func sharedResource(subpath: String) -> HTTPResponse {
         // subpath like "/katex/katex.min.css" or "/katex/fonts/KaTeX_Main-Regular.woff2"
-        guard let resourceRoot = Bundle.module.url(forResource: "editor", withExtension: "html", subdirectory: "LANServer/WebResources")?
+        guard let resourceRoot = Bundle.module.url(forResource: "marked.min", withExtension: "js", subdirectory: "SharedWebResources")?
             .deletingLastPathComponent() else {
             return .notFound()
         }

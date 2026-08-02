@@ -12,9 +12,11 @@ struct PrompterWebView: UIViewRepresentable {
     /// whether the web content can receive scroll gestures directly from the user.
     var isInteractivePreview: Bool = false
 
+    /// `prompter.html` references `../../SharedWebResources/...` for KaTeX/marked, so WKWebView
+    /// needs read access to the whole resource bundle root (their common ancestor), not just
+    /// `prompter.html`'s own directory.
     static func resourceDirectory() -> URL? {
-        Bundle.module.url(forResource: "prompter", withExtension: "html", subdirectory: "TeleprompterEngine/Resources")?
-            .deletingLastPathComponent()
+        Bundle.module.resourceURL
     }
 
     func makeUIView(context: Context) -> WKWebView {
