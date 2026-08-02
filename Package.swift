@@ -29,6 +29,13 @@ let package = Package(
                 // resource basenames to be unique within a target, even across subdirectories.
                 .copy("SharedWebResources/marked.min.js"),
                 .copy("SharedWebResources/katex"),
+            ],
+            // Swift 6 tools/syntax, but Swift 5 language mode: relaxed (non-strict) actor
+            // isolation checking, matching how most shipping iOS apps build today. See
+            // BUILD_NOTES.md "Concurrency" for the handful of spots that were written with
+            // strict-mode discipline anyway (explicit main-actor hops via Task/DispatchQueue).
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
             ]
         ),
     ]
