@@ -8,7 +8,11 @@ import Observation
 /// session's own delegate callback longer than one frame — if segmentation falls behind, frames
 /// are composited with the last-known mask rather than dropped, so recording never stalls.
 final class SyntheticCinematicPipeline: NSObject {
-    @MainActor @Observable final class State {
+    /// Not `@MainActor` itself (its owner, `SyntheticCinematicPipeline`, isn't actor-isolated
+    /// either — see the class doc comment) — every write is already routed through
+    /// `Task { @MainActor in ... }` at the call site, so SwiftUI only ever observes main-thread
+    /// changes without needing the type itself to be actor-isolated.
+    @Observable final class State {
         var isRunning = false
         var isSimulatedLabelVisible = true
     }
