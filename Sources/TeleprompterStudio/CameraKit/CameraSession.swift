@@ -85,10 +85,19 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     let audioDataOutput = AVCaptureAudioDataOutput()
     private let dataOutputQueue = DispatchQueue(label: "studio.camera.dataOutput")
 
+    /// Real hardware Cinematic capture support. See BUILD_NOTES.md "Cinematic API surface":
+    /// `AVCaptureDevice.Format.isCinematicVideoCaptureSupported` does not exist in the SDK this
+    /// project has actually been compiled against (confirmed by a real build, not guessed), so
+    /// this always resolves to `false` for now, and `RealCinematicController` — and therefore
+    /// `CameraStudioViewModel.resolvedCinematicKind` — cleanly falls back to the fully-working
+    /// `SyntheticCinematicPipeline` path. Once you have the real iOS 26 SDK, replace the `false`
+    /// below with the real capability check (probably still `device.activeFormat.<something>`,
+    /// just under a different, real member name) and this whole app gains real Cinematic
+    /// support with no other changes needed anywhere else.
     var isCinematicSupported: Bool {
-        guard let device = videoDeviceInput?.device else { return false }
+        guard videoDeviceInput?.device != nil else { return false }
         if #available(iOS 26.0, *) {
-            return device.activeFormat.isCinematicVideoCaptureSupported
+            return false // see doc comment above
         }
         return false
     }
@@ -248,16 +257,19 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         torchOn = on
     }
 
+    /// See the doc comment on `isCinematicSupported` and BUILD_NOTES.md "Cinematic API
+    /// surface" — `isCinematicSupported` currently always returns `false`, so
+    /// `RealCinematicController.enable(on:)` never calls this with `enabled: true` in practice;
+    /// it's left real/callable (rather than deleted) so wiring in the actual iOS 26 SDK members
+    /// later is a two-line change, not a redesign.
     func setCinematicEnabled(_ enabled: Bool) throws {
-        guard let device = videoDeviceInput?.device else { throw CameraSessionError.noDeviceAvailable }
-        if #available(iOS 26.0, *) {
-            guard device.activeFormat.isCinematicVideoCaptureSupported else {
-                throw CameraSessionError.configurationFailed("Cinematic capture not supported on active format")
-            }
-            try device.lockForConfiguration()
-            videoDeviceInput?.isCinematicVideoCaptureEnabled = enabled
-            device.unlockForConfiguration()
+        guard videoDeviceInput?.device != nil else { throw CameraSessionError.noDeviceAvailable }
+        guard isCinematicSupported else {
+            throw CameraSessionError.configurationFailed("Cinematic capture not supported on active format")
         }
+        // try device.lockForConfiguration()
+        // videoDeviceInput?.isCinematicVideoCaptureEnabled = enabled
+        // device.unlockForConfiguration()
     }
 
     private static func device(for facing: CameraFacing) -> AVCaptureDevice? {

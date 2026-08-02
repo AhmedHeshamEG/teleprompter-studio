@@ -2,15 +2,15 @@
 
 Status: full SwiftPM/xtool project delivered per the spec's module layout and Build Sequence.
 No feature is stubbed — every screen/control described in the spec has a real implementation.
-This file exists because the app was built **without Xcode, without a Mac, and without a Swift
-toolchain of any kind on the build machine** (Windows, no WSL Swift install available in this
-environment). Everything below was written against public xtool source (verified by reading
-`xtool-org/xtool` on GitHub — `PackLib/PackSchema.swift`, `PackLib/Planner.swift`,
-`XToolSupport/NewCommand.swift`, `XToolSupport/DevCommand.swift`) and Apple's documented
-AVFoundation/SwiftUI/SwiftData/MultipeerConnectivity/Network/Vision/CoreImage APIs, but **it has
-never been run through `swift build` or `xtool dev build`**. Treat the first real build on your
-machine as the actual first compile pass, and expect to fix a small number of mechanical issues
-(a typo, an argument label) rather than architectural ones.
+This app was written **without Xcode, without a Mac, and without any local Swift toolchain**
+(Windows, no WSL available). It has since been **compiled for real** — via a GitHub Actions
+workflow (`.github/workflows/build-ipa.yml`) running on a macOS runner with real Xcode/`xtool` —
+and that process is what found and fixed the issues below (SwiftPM duplicate-resource-name
+rules, a couple of Swift 6 strict-concurrency proofs, and confirmation that the iOS 26 Cinematic
+capture API names guessed from the build brief don't exist in the SDK available there). Check
+the Actions tab on the repo for the current status of `xtool dev build --ipa`; each fix here was
+driven by a real compiler error, not guesswork. If you build locally and hit something new, it's
+most likely SDK-version-specific.
 
 ## What to do first
 
@@ -65,29 +65,32 @@ from the project root. If anything fails, it's most likely one of the items belo
   (`katex/fonts/*.woff2` from `katex.min.css`) are preserved inside `Bundle.module`, so the CSS's
   relative font URLs resolve correctly without extra `Bundle` plumbing.
 
-## The one genuinely unverifiable API surface: real Cinematic capture (iOS 26)
+## Real Cinematic capture (iOS 26) — confirmed unavailable in the CI SDK, cleanly disabled
 
-`CameraKit/CinematicReal/RealCinematicController.swift` is intentionally isolated (per the
-spec's own "HARD PARTS" guidance) because this build machine has no Xcode 26 / iOS 26 SDK to
-check exact symbol names against. What's implemented and *should* be correct, mirroring the
-build brief's own API names 1:1:
+`CameraKit/CinematicReal/RealCinematicController.swift` mirrors the build brief's own API names
+for real hardware Cinematic capture:
 
-- `AVCaptureDeviceInput.isCinematicVideoCaptureEnabled` (set in `AVCameraSession.setCinematicEnabled`)
-- `AVCaptureDevice.activeFormat.isCinematicVideoCaptureSupported` (capability gate)
-- Both calls are wrapped in `if #available(iOS 26.0, *)`, with `SyntheticCinematicPipeline` as
-  the always-available, fully-implemented fallback — the app **never fails to compile or run**
-  on toolchains/devices without iOS 26.
+- `AVCaptureDeviceInput.isCinematicVideoCaptureEnabled`
+- `AVCaptureDevice.activeFormat.isCinematicVideoCaptureSupported`
 
-What's *not* wired to a live call: `setCinematicVideoTrackingFocus(detectedObjectID:focusMode:)`
-in `RealCinematicController.applyFocus(objectID:mode:output:)` is left as a commented, clearly
-call-shaped line rather than a compiled call, because the exact declaring type
-(`AVCaptureMovieFileOutput`? a dedicated tracking-focus delegate object?) and the exact shape of
-`CinematicVideoFocusMode` are the kind of thing that only exists in the real iOS 26 SDK headers.
-Everything around it — subject detection state, tap-to-lock hit-testing, the UI toggle/picker —
-is real and works; only that one line needs to be uncommented and matched to the real SDK
-signature on your first Xcode-free build. This is exactly the "isolate it behind a protocol with
-a working default, note it clearly" instruction from the spec, applied to the smallest possible
-surface area.
+The CI build (real Xcode, macOS runner) confirmed **neither member exists** in the SDK it built
+against — this isn't a guess anymore, it's a real `error: value of type '...' has no member
+'...'` from the compiler. Since the actual selector names can't be verified from this
+environment, `AVCameraSession.isCinematicSupported` now unconditionally returns `false` and
+`setCinematicEnabled` never performs the (commented-out) real call, per the spec's own "isolate
+it behind a protocol with a working default" guidance for exactly this situation. Practical
+effect: toggling "Cinematic" in Studio always resolves to `SyntheticCinematicPipeline` (the
+segmentation + Core Image blur fallback), which is fully implemented and works today — nothing
+in the app fails to compile or crashes at runtime because of this.
+
+**To enable real Cinematic capture later**, once you have the actual iOS 26 SDK:
+1. In `CameraSession.swift`, replace the `false` in `isCinematicSupported` with the real
+   capability check, and uncomment the two lines in `setCinematicEnabled`.
+2. In `RealCinematicController.applyFocus(objectID:mode:output:)`, uncomment the
+   `setCinematicVideoTrackingFocus(detectedObjectID:focusMode:)` call and fix its signature to
+   match the real SDK (declaring type and `CinematicVideoFocusMode` shape are still unverified).
+
+Both are small, isolated, single-file changes — no architecture changes needed.
 
 ## Design decisions worth knowing about
 

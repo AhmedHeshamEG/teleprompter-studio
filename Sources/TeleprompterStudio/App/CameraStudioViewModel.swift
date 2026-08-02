@@ -18,7 +18,9 @@ final class CameraStudioViewModel {
     let script: Script
     let session = AVCameraSession()
     let recordingCoordinator = RecordingCoordinator()
-    let realCinematic = RealCinematicController()
+    // `var`, not `let`: StudioSettingsSheet derives a nested Binding via `$viewModel.realCinematic.focusMode`,
+    // which requires a WritableKeyPath (i.e. a settable property), even though the object itself is never reassigned.
+    var realCinematic = RealCinematicController()
     let levelMonitor = LevelMonitor()
     let prompterController = PrompterController()
     private let previewStreamer = AdaptivePreviewStreamer()
