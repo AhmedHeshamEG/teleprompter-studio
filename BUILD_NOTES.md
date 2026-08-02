@@ -7,10 +7,13 @@ This app was written **without Xcode, without a Mac, and without any local Swift
 workflow (`.github/workflows/build-ipa.yml`) running on a macOS runner with real Xcode/`xtool` —
 and that process is what found and fixed the issues below (SwiftPM duplicate-resource-name
 rules, a couple of Swift 6 strict-concurrency proofs, and confirmation that the iOS 26 Cinematic
-capture API names guessed from the build brief don't exist in the SDK available there). Check
-the Actions tab on the repo for the current status of `xtool dev build --ipa`; each fix here was
-driven by a real compiler error, not guesswork. If you build locally and hit something new, it's
-most likely SDK-version-specific.
+capture API names guessed from the build brief don't exist in the SDK available there).
+
+**As of commit `522f179`, `xtool dev build --ipa` succeeds** on GitHub Actions (macOS runner,
+real Xcode) — see the Actions tab on the repo for the latest run. Each fix in this file was
+driven by a real compiler error, not guesswork. The build produces an unsigned `.ipa`; install
+it to a device with `xtool dev build --sign` (needs `xtool auth` login) or by re-signing it with
+a tool like Sideloadly.
 
 ## What to do first
 
