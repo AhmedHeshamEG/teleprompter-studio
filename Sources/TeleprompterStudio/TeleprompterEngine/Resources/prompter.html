@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="prompter.css">
+</head>
+<body>
+  <div id="mirror-wrap">
+    <div id="scroller">
+      <div id="top-spacer"></div>
+      <div id="content"></div>
+      <div id="bottom-spacer"></div>
+    </div>
+  </div>
+
+  <div id="guide-band" class="guide-hidden"></div>
+  <div id="guide-line" class="guide-hidden"></div>
+
+  <div id="countdown-overlay" class="hidden">
+    <div id="countdown-number">3</div>
+  </div>
+
+  <script src="marked.min.js"></script>
+  <script src="katex/katex.min.js"></script>
+  <script src="katex/auto-render.min.js"></script>
+  <script src="prompter.js"></script>
+</body>
+</html>

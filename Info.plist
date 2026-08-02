@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Camera + mic are required for both self-recording and live preview under the prompter overlay. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Teleprompter Studio uses the camera to show your live preview under the scrolling script and to record your takes.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Teleprompter Studio uses the microphone to record audio with your video takes.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Teleprompter Studio saves your finished recordings to your Photos library.</string>
+
+	<!-- Shared by MultipeerConnectivity (Director/Companion sync) and the local LAN script-editing server. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Teleprompter Studio uses your local Wi-Fi network to mirror the prompter to a second device and to let you edit scripts from a browser on the same network. No data leaves your network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_tpsync._tcp</string>
+		<string>_tpsync._udp</string>
+		<string>_tpweb._tcp</string>
+	</array>
+
+	<!-- No proprietary/non-exempt encryption beyond standard OS-provided TLS. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<true/>
+	<key>UIStatusBarHidden</key>
+	<false/>
+</dict>
+</plist>
