@@ -1,0 +1,120 @@
+:root {
+  color-scheme: dark;
+  --bg: #0B0B0E;
+  --surface: #16161A;
+  --surface-elevated: #202025;
+  --border: rgba(255,255,255,0.08);
+  --accent: #FF8C1A;
+  --text: #FFFFFF;
+  --text-secondary: rgba(255,255,255,0.62);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+#sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+#sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+#sidebar-header h1 { font-size: 16px; margin: 0; }
+#new-script-btn {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: black;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#script-list { padding: 8px; }
+.script-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+.script-item:hover { background: var(--surface-elevated); }
+.script-item.active { background: var(--accent); color: black; }
+.script-item .title { font-weight: 600; font-size: 14px; display: block; }
+.script-item .meta { font-size: 12px; opacity: 0.6; }
+.script-item.active .meta { opacity: 0.75; }
+
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+#title-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  outline: none;
+}
+#save-status { font-size: 12px; color: var(--text-secondary); }
+
+#panes {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+#markdown-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 20px;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 15px;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+}
+#preview {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  font-size: 18px;
+  line-height: 1.5;
+}
+#preview h1, #preview h2, #preview h3 { color: var(--accent); }
+#preview mark { border-radius: 0.15em; padding: 0 0.2em; }

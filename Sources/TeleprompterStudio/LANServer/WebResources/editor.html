@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teleprompter Studio — Scripts</title>
+<link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <h1>Scripts</h1>
+        <button id="new-script-btn" title="New script">+</button>
+      </div>
+      <div id="script-list"></div>
+    </aside>
+
+    <main id="main">
+      <div id="toolbar">
+        <input id="title-input" placeholder="Untitled Script" />
+        <span id="save-status">Saved</span>
+      </div>
+      <div id="panes">
+        <textarea id="markdown-input" placeholder="Start writing your script. Use **bold**, *italic*, $inline math$, and $$block math$$."></textarea>
+        <div id="preview"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="marked.min.js"></script>
+  <script src="katex/katex.min.js"></script>
+  <script src="katex/auto-render.min.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

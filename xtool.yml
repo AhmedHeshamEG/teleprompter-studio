@@ -1,0 +1,5 @@
+version: 1
+# Replace with your own reverse-DNS bundle identifier before signing/deploying.
+bundleID: com.example.TeleprompterStudio
+infoPath: Info.plist
+iconPath: AppIcon.png
