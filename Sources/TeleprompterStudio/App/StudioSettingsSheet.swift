@@ -80,6 +80,17 @@ struct StudioSettingsSheet: View {
                                 Text("Strong Rack").tag(CinematicFocusMode.strong)
                                 Text("Weak Rack").tag(CinematicFocusMode.weak)
                             }
+                            // The system's own simulated aperture, in f-stops — the hardware
+                            // equivalent of the synthetic path's blur amount.
+                            LabeledSlider(
+                                label: "Aperture",
+                                systemImage: "camera.aperture",
+                                value: Binding(
+                                    get: { viewModel.cinematicAperture },
+                                    set: { viewModel.setCinematicAperture($0) }
+                                ),
+                                range: 2...16
+                            ) { String(format: "f/%.1f", $0) }
                         } else {
                             LabeledSlider(
                                 label: "Aperture Blur",

@@ -16,18 +16,14 @@ struct CinematicDetectedSubject: Identifiable, Equatable {
     let boundingBox: CGRect // normalized 0...1, origin top-left
 }
 
-/// Drives real, hardware-accelerated Cinematic Video capture on iOS 26+ / supported devices.
+/// Drives Apple's own hardware Cinematic Video capture, where the device supports it.
 ///
-/// IMPORTANT (see BUILD_NOTES.md "Cinematic API surface"): the exact selector names for the
-/// iOS 26 Cinematic capture API (`isCinematicVideoCaptureEnabled`,
-/// `setCinematicVideoTrackingFocus(detectedObjectID:focusMode:)`) are specified by this
-/// project's build brief and mirror Apple's WWDC24 "Cinematic Framework" session, but this
-/// code was written without access to the iOS 26 SDK headers (no Xcode on this build machine).
-/// Everything iOS-26-specific is isolated in this one file behind `#available` + a runtime
-/// capability check, with `SyntheticCinematicPipeline` as the always-available fallback, per
-/// the "HARD PARTS" guidance to keep any single uncertain API surface swappable without
-/// breaking the rest of the app. Verify these selectors against the real SDK on first Xcode-free
-/// build (`xtool dev build`) and patch just this file if names differ.
+/// Capability detection and the actual switch-on live in `CinematicVideoSupport` +
+/// `AVCameraSession`, which reach the API by selector at runtime — the build toolchain's SDK
+/// doesn't declare it, but the OS on the device does. This type is the app-facing state: whether
+/// it's on, which subjects the system has detected, and which one focus is locked to.
+/// `SyntheticCinematicPipeline` remains the fallback whenever the hardware path isn't available or
+/// the OS declines it.
 @MainActor
 @Observable
 final class RealCinematicController {
@@ -37,12 +33,11 @@ final class RealCinematicController {
     var focusMode: CinematicFocusMode = .strong
 
     static func isSupported(session: AVCameraSession) -> Bool {
-        guard #available(iOS 26.0, *) else { return false }
-        return session.isCinematicSupported
+        session.isCinematicSupported
     }
 
     func enable(on session: AVCameraSession) throws {
-        guard #available(iOS 26.0, *) else {
+        guard CinematicVideoSupport.isAvailableOnThisOS else {
             throw CinematicError.unsupportedOS
         }
         guard session.isCinematicSupported else {
