@@ -137,6 +137,13 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     private(set) var selectedAudioDeviceID: String?
     private var preferredAudioDeviceID: String?
 
+    /// Fired (off the main thread) with `(previewAngle, captureAngle)` whenever either changes.
+    /// Anything drawing processed capture frames *over* the preview needs the difference between
+    /// the two: frames from `videoDataOutput` are rotated for capture, the preview layer is rotated
+    /// for the interface. They agree while the interface follows the device, and diverge the moment
+    /// rotation is locked and the phone is turned.
+    var onRotationAnglesChanged: ((CGFloat, CGFloat) -> Void)?
+
     /// Frames delegate for the synthetic cinematic pipeline / live preview streaming to hook into.
     weak var videoDataDelegate: AVCaptureVideoDataOutputSampleBufferDelegate?
     weak var audioDataDelegate: AVCaptureAudioDataOutputSampleBufferDelegate?
@@ -343,6 +350,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             syncPreviewLayerNow()
             DispatchQueue.main.async { self.previewRotationAngle = preview }
         }
+        onRotationAnglesChanged?(lastPreviewAngle, lastCaptureAngle)
     }
 
     func start() {

@@ -11,11 +11,20 @@ struct StudioView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppState.self) private var appState
 
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
     @State private var showingSettingsSheet = false
     @State private var showingPeerSheet = false
-    /// Owned here, not inside `PrompterControlsView`, so the panel can be presented as the
-    /// topmost layer of the whole screen instead of as chrome sitting next to the record button.
+    /// Owned here so the panel survives chrome rebuilds; presented from the button itself inside
+    /// `PrompterControlsView` (sheet in portrait, popover in landscape).
     @State private var showingPrompterSliders = false
+
+    /// Landscape on iPhone: short screen, wide screen. Both the chrome layout and the prompter
+    /// card's proportions key off this.
+    private var isCompactHeight: Bool { verticalSizeClass == .compact }
+    /// Set once the first real layout pass has run, so opening Studio while already in landscape
+    /// gets landscape-shaped defaults instead of portrait ones stretched sideways.
+    @State private var didApplyInitialLayout = false
 
     /// The prompter text is the floating, hand-draggable element (not the record controls).
     /// Position is stored as a screen-fraction so it stays valid across rotation/resizing
@@ -103,9 +112,6 @@ struct StudioView: View {
         .sheet(isPresented: $showingPeerSheet) {
             PeerDiscoveryView(coordinator: appState.syncCoordinator)
         }
-        .sheet(isPresented: $showingPrompterSliders) {
-            PrompterSlidersPanel(controller: viewModel.prompterController)
-        }
         .preferredColorScheme(.dark)
     }
 
@@ -136,9 +142,37 @@ struct StudioView: View {
             y: promptPositionFraction.y * screenSize.height
         )
         .animation(Theme.smoothSpring, value: screenSize.width) // re-clamp smoothly on rotation
-        .onChange(of: screenSize) { _, newSize in
-            promptPositionFraction = clampedFraction(promptPositionFraction, size: promptSize, screenSize: newSize)
+        .onAppear { applyInitialLayout(for: screenSize) }
+        .onChange(of: screenSize) { oldSize, newSize in
+            reflowCard(from: oldSize, to: newSize)
         }
+    }
+
+    /// Rotation used to stretch the card: its width and height are stored as fractions of the
+    /// screen, so a card that was a comfortable 92%-wide column in portrait became a 92%-wide,
+    /// half-height *band* in landscape — text reflowed to enormous line lengths, the card covering
+    /// the frame, nothing where you left it. This converts the card's actual point size through the
+    /// rotation instead, so it stays the same physical size on screen and only gets clamped when
+    /// the new screen genuinely can't fit it.
+    private func reflowCard(from oldSize: CGSize, to newSize: CGSize) {
+        guard oldSize.width > 0, oldSize.height > 0, newSize.width > 0, newSize.height > 0 else { return }
+        let widthPoints = oldSize.width * promptWidthFraction
+        let heightPoints = oldSize.height * viewModel.overlayHeightFraction
+        promptWidthFraction = min(max(widthPoints / newSize.width, 0.35), 1.0)
+        viewModel.overlayHeightFraction = min(max(heightPoints / newSize.height, 0.15), 0.92)
+        promptPositionFraction = clampedFraction(promptPositionFraction, size: promptSize, screenSize: newSize)
+    }
+
+    /// Landscape-first defaults for a Studio opened while the phone is already sideways. A
+    /// full-width card on a landscape screen is a 700pt-wide line of text, which is unreadable at
+    /// prompter speed; a narrower column sitting higher up leaves the chrome its own space.
+    private func applyInitialLayout(for screenSize: CGSize) {
+        guard !didApplyInitialLayout, screenSize.width > 0, screenSize.height > 0 else { return }
+        didApplyInitialLayout = true
+        guard screenSize.width > screenSize.height else { return }
+        promptWidthFraction = 0.6
+        viewModel.overlayHeightFraction = 0.52
+        promptPositionFraction = CGPoint(x: 0.5, y: 0.36)
     }
 
     private func promptDragHandle(screenSize: CGSize) -> some View {
@@ -251,47 +285,70 @@ struct StudioView: View {
         .padding(Theme.spacingM)
     }
 
+    /// Portrait stacks the prompter transport above the capture controls. Landscape puts them side
+    /// by side: two stacked rows ate roughly a third of a landscape screen's height, pushing the
+    /// script and the frame into what was left. Same controls, same sizes, laid out for the space
+    /// that actually exists — which is what the system's own camera chrome does when it rotates.
     private var bottomChrome: some View {
-        // Deliberate gap between the transport row and the record row — they were close enough
-        // that a thumb aimed at one could catch the other.
-        VStack(spacing: Theme.spacingM) {
-            PrompterControlsView(
-                controller: viewModel.prompterController,
-                showingSliders: $showingPrompterSliders
-            )
+        Group {
+            if isCompactHeight {
+                HStack(alignment: .center, spacing: Theme.spacingL) {
+                    PrompterControlsView(
+                        controller: viewModel.prompterController,
+                        showingSliders: $showingPrompterSliders
+                    )
+                    .frame(maxWidth: .infinity)
 
-            HStack(spacing: Theme.spacingL) {
-                if viewModel.runMode == .record {
-                    ChromeButton(systemImage: "arrow.triangle.2.circlepath.camera", size: Theme.minControlSizeCompact) {
-                        viewModel.toggleFacing()
-                    }
-                    ChromeButton(
-                        systemImage: "sparkles",
-                        isActive: viewModel.cinematicMode == .cinematic,
-                        size: Theme.minControlSizeCompact
-                    ) {
-                        viewModel.toggleCinematic()
-                    }
+                    captureControls
                 }
-
-                RecordButton(
-                    isRecording: viewModel.recordingCoordinator.isRecording,
-                    isArmed: viewModel.isArmed
-                ) {
-                    viewModel.toggleRecording()
-                }
-
-                if viewModel.runMode == .record {
-                    // The framing grid lives in Studio Settings now (and is on by default) — it's
-                    // a set-once framing preference, not something worth a permanent slot in the
-                    // thumb-reachable chrome next to the record button.
-                    ChromeButton(systemImage: viewModel.session.torchOn ? "bolt.fill" : "bolt.slash", size: Theme.minControlSizeCompact) {
-                        viewModel.session.setTorch(on: !viewModel.session.torchOn)
-                    }
+                .padding(.horizontal, Theme.spacingM)
+            } else {
+                // Deliberate gap between the transport row and the record row — they were close
+                // enough that a thumb aimed at one could catch the other.
+                VStack(spacing: Theme.spacingM) {
+                    PrompterControlsView(
+                        controller: viewModel.prompterController,
+                        showingSliders: $showingPrompterSliders
+                    )
+                    captureControls
                 }
             }
         }
-        .padding(.bottom, Theme.spacingM)
+        .padding(.bottom, isCompactHeight ? Theme.spacingS : Theme.spacingM)
+    }
+
+    private var captureControls: some View {
+        HStack(spacing: Theme.spacingL) {
+            if viewModel.runMode == .record {
+                ChromeButton(systemImage: "arrow.triangle.2.circlepath.camera", size: Theme.minControlSizeCompact) {
+                    viewModel.toggleFacing()
+                }
+                ChromeButton(
+                    systemImage: "sparkles",
+                    isActive: viewModel.cinematicMode == .cinematic,
+                    size: Theme.minControlSizeCompact
+                ) {
+                    viewModel.toggleCinematic()
+                }
+            }
+
+            RecordButton(
+                isRecording: viewModel.recordingCoordinator.isRecording,
+                isArmed: viewModel.isArmed
+            ) {
+                viewModel.toggleRecording()
+            }
+
+            if viewModel.runMode == .record {
+                // The framing grid lives in Studio Settings now (and is on by default) — it's
+                // a set-once framing preference, not something worth a permanent slot in the
+                // thumb-reachable chrome next to the record button.
+                ChromeButton(systemImage: viewModel.session.torchOn ? "bolt.fill" : "bolt.slash", size: Theme.minControlSizeCompact) {
+                    viewModel.session.setTorch(on: !viewModel.session.torchOn)
+                }
+            }
+        }
+        .fixedSize()
     }
 }
 

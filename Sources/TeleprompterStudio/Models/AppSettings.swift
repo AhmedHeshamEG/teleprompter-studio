@@ -13,7 +13,8 @@ final class AppSettings {
     /// `AppSettings.current(in:)`.
     var singletonKey: String = "app-settings"
 
-    var defaultSpeedPxPerSec: Double = 90
+    /// Matches `PrompterPreferences.defaultSpeed` — a readable-aloud pace, not the old 90 px/s sprint.
+    var defaultSpeedPxPerSec: Double = 35
     var defaultFontSize: Double = 46
 
     var lanServerEnabled: Bool = false
