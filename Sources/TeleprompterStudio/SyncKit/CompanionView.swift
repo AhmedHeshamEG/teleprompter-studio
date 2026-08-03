@@ -10,12 +10,18 @@ struct CompanionView: View {
     @State private var controller = PrompterController()
     @State private var showMonitor = true
 
+    /// How far the local scroll may drift from the Director's reported position before it's
+    /// snapped back. The Companion scrolls under its own steam at the Director's speed and only
+    /// corrects on real drift — snapping to every position report, four times a second, is what
+    /// made the mirrored script stutter instead of read.
+    private let driftTolerance = 0.015
+
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
 
             NativePrompterView(
-                document: coordinator.latestDocument ?? PrompterDocument(markdown: "Waiting for Director…"),
+                document: coordinator.latestDocument ?? PrompterDocument(markdown: placeholderText),
                 controller: controller,
                 isInteractivePreview: false
             )
@@ -53,15 +59,55 @@ struct CompanionView: View {
             }
         }
         .statusBarHidden()
+        .peerInviteAlert(coordinator: coordinator)
         .onChange(of: coordinator.latestDocument) { _, newValue in
             if let newValue { controller.loadDocument(newValue) }
         }
         .onChange(of: coordinator.latestPlayback?.fraction) { _, _ in
-            guard let playback = coordinator.latestPlayback else { return }
-            controller.jumpToFraction(playback.fraction)
+            applyPlaybackState()
         }
         .onAppear {
             coordinator.setRole(.companion)
+            // Entering Companion mode used to start neither the advertiser nor the browser, so a
+            // device that hadn't already opened "Connect a Device" could never be found or find
+            // anyone — the screen just sat on its placeholder forever.
+            coordinator.startHosting()
+            // `.onChange` only fires on *changes*, and the Director publishes the script the moment
+            // a peer connects — which is usually before this screen exists. Without this, arriving
+            // after the script had already been sent left the prompter on the placeholder.
+            if let document = coordinator.latestDocument {
+                controller.loadDocument(document)
+            }
+            applyPlaybackState()
+        }
+        .onDisappear {
+            controller.pause()
+        }
+    }
+
+    private var placeholderText: String {
+        switch coordinator.connectionState {
+        case .connected: return "Connected. Waiting for the Director's script…"
+        case .connecting: return "Connecting to the Director…"
+        case .notConnected: return "Looking for a Director on this Wi-Fi network…\n\nOn the other device: Settings → Connect a Device, then tap this device's name."
+        }
+    }
+
+    /// Mirrors the Director's transport state, not just its position: same speed, same font size,
+    /// same play/pause, with a position correction only when the two have genuinely drifted apart.
+    private func applyPlaybackState() {
+        guard let playback = coordinator.latestPlayback else { return }
+        if abs(controller.speedPxPerSec - playback.speed) > 0.5 {
+            controller.speedPxPerSec = playback.speed
+        }
+        if abs(controller.fontSize - playback.fontSize) > 0.5 {
+            controller.fontSize = playback.fontSize
+        }
+        if abs(controller.progress - playback.fraction) > driftTolerance {
+            controller.jumpToFraction(playback.fraction)
+        }
+        if playback.isPlaying != controller.isPlaying {
+            playback.isPlaying ? controller.play() : controller.pause()
         }
     }
 
@@ -69,7 +115,11 @@ struct CompanionView: View {
         HStack {
             ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
             Spacer()
-            Badge(text: "Companion", color: Theme.accent)
+            Badge(
+                text: coordinator.connectionState == .connected ? "Companion · Linked" : "Companion · Searching",
+                color: coordinator.connectionState == .connected ? Theme.success : Theme.textSecondary,
+                filled: coordinator.connectionState == .connected
+            )
             if coordinator.remoteIsRecording {
                 RecordingIndicator(isRecording: true, elapsed: coordinator.remoteElapsed)
             }
@@ -100,5 +150,9 @@ struct CompanionView: View {
             }
         }
         .padding(Theme.spacingL)
+        // Remote control is meaningless with nobody on the other end, and a dead-looking button you
+        // can still press reads as a bug.
+        .disabled(coordinator.connectionState != .connected)
+        .opacity(coordinator.connectionState == .connected ? 1 : 0.4)
     }
 }

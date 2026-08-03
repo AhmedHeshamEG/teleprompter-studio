@@ -21,6 +21,7 @@ struct PendingInvite: Identifiable {
 @Observable
 final class SyncCoordinator: NSObject {
     private static let serviceType = "tpsync" // matches NSBonjourServices in Info.plist
+    private static let roleDefaultsKey = "sync.role"
 
     private let peerID = MCPeerID(displayName: UIDevice.current.name)
     private var session: MCSession!
@@ -28,10 +29,22 @@ final class SyncCoordinator: NSObject {
     private var browser: MCNearbyServiceBrowser?
 
     private(set) var role: SyncRole = .director
+    /// The role the other device announced. Announcements are re-sent whenever a peer connects,
+    /// because a role is always chosen *before* there is anyone to tell — the first announce
+    /// (sent from `setRole`) has no peers and is dropped by design.
+    private(set) var peerRole: SyncRole?
     private(set) var connectionState: PeerConnectionState = .notConnected
     private(set) var connectedPeers: [MCPeerID] = []
     private(set) var discoveredPeers: [MCPeerID] = []
+    /// Whether this device is currently advertising itself and browsing for others. Published
+    /// because more than one screen turns discovery on, and a stale local toggle that says "off"
+    /// while the advertiser is running will happily shut down a working connection.
+    private(set) var isHosting = false
     var pendingInvite: PendingInvite?
+
+    var hasConnectedPeers: Bool { !connectedPeers.isEmpty }
+
+    var localDeviceName: String { peerID.displayName }
 
     /// Latest state received from the Director, for Companion UI to render.
     private(set) var latestDocument: PrompterDocument?
@@ -55,14 +68,29 @@ final class SyncCoordinator: NSObject {
         super.init()
         session = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .none)
         session.delegate = self
+        if let stored = UserDefaults.standard.string(forKey: Self.roleDefaultsKey),
+           let storedRole = SyncRole(rawValue: stored) {
+            role = storedRole
+        }
     }
 
     func setRole(_ role: SyncRole) {
         self.role = role
+        UserDefaults.standard.set(role.rawValue, forKey: Self.roleDefaultsKey)
+        announceRole()
+    }
+
+    private func announceRole() {
         broadcast(.roleAnnounce(role), reliable: true)
     }
 
+    /// Idempotent: safe to call from every screen that needs the two devices to be able to find
+    /// each other. Entering Companion mode used to start nothing at all, so a device that hadn't
+    /// first visited "Connect a Device" sat on "Waiting for Director…" forever with no advertiser
+    /// and no browser running.
     func startHosting() {
+        guard !isHosting else { return }
+
         let advertiser = MCNearbyServiceAdvertiser(peer: peerID, discoveryInfo: ["role": role.rawValue], serviceType: Self.serviceType)
         advertiser.delegate = self
         advertiser.startAdvertisingPeer()
@@ -72,20 +100,56 @@ final class SyncCoordinator: NSObject {
         browser.delegate = self
         browser.startBrowsingForPeers()
         self.browser = browser
+
+        isHosting = true
     }
 
     func stopHosting() {
+        let hadPeers = hasConnectedPeers
         advertiser?.stopAdvertisingPeer()
         browser?.stopBrowsingForPeers()
         advertiser = nil
         browser = nil
         session.disconnect()
         connectedPeers = []
+        discoveredPeers = []
+        peerRole = nil
         connectionState = .notConnected
+        isHosting = false
+        if hadPeers { onConnectedPeersChanged?(false) }
     }
 
     func invite(peer: MCPeerID) {
+        startHosting() // inviting without a browser silently does nothing
         browser?.invitePeer(peer, to: session, withContext: nil, timeout: 15)
+    }
+
+    // MARK: Invitation presenters
+
+    /// An incoming invitation has to be confirmed by a tap, and the confirmation used to live
+    /// *only* on the "Connect a Device" sheet. Invite someone who is sitting in Companion mode (or
+    /// in Studio) and the alert had nowhere to appear, so the connection could never complete and
+    /// the whole feature looked broken. Screens register themselves here instead; the most recently
+    /// presented one owns the alert, so it always lands on top of whatever is actually on screen.
+    private(set) var invitePresenters: [UUID] = []
+
+    func registerInvitePresenter(_ id: UUID) {
+        guard !invitePresenters.contains(id) else { return }
+        invitePresenters.append(id)
+    }
+
+    func unregisterInvitePresenter(_ id: UUID) {
+        invitePresenters.removeAll { $0 == id }
+    }
+
+    func isTopInvitePresenter(_ id: UUID) -> Bool {
+        invitePresenters.last == id
+    }
+
+    func respondToPendingInvite(accept: Bool) {
+        let invite = pendingInvite
+        pendingInvite = nil
+        invite?.respond(accept)
     }
 
     // MARK: Director -> Companion outbound state
@@ -128,8 +192,8 @@ final class SyncCoordinator: NSObject {
 
     private func handle(_ message: SyncMessage) {
         switch message {
-        case .roleAnnounce:
-            break // role is user-selected locally; peer role is informational only for now.
+        case .roleAnnounce(let announced):
+            peerRole = announced
         case .scriptSync(let title, let markdown, let style):
             latestDocument = style.asDocument(markdown)
             _ = title
@@ -156,12 +220,16 @@ extension SyncCoordinator: MCSessionDelegate {
             case .connected:
                 if !self.connectedPeers.contains(peerID) { self.connectedPeers.append(peerID) }
                 self.connectionState = .connected
+                self.announceRole()
                 self.onPeerConnected?(peerID)
             case .connecting:
                 self.connectionState = .connecting
             case .notConnected:
                 self.connectedPeers.removeAll { $0 == peerID }
-                if self.connectedPeers.isEmpty { self.connectionState = .notConnected }
+                if self.connectedPeers.isEmpty {
+                    self.connectionState = .notConnected
+                    self.peerRole = nil
+                }
             @unknown default:
                 break
             }

@@ -111,6 +111,9 @@ struct StudioView: View {
         .sheet(isPresented: $showingPeerSheet) {
             PeerDiscoveryView(coordinator: appState.syncCoordinator)
         }
+        // Studio covers the whole screen, so it has to be able to present an incoming connection
+        // request itself — otherwise a Companion can never be accepted mid-session.
+        .peerInviteAlert(coordinator: appState.syncCoordinator)
         .preferredColorScheme(.dark)
     }
 
@@ -274,9 +277,9 @@ struct StudioView: View {
 
             StudioRecordingIndicator(coordinator: viewModel.recordingCoordinator)
 
-            ChromeButton(systemImage: "person.2.fill", size: Theme.minControlSizeCompact) {
-                showingPeerSheet = true
-            }
+            // Own view: it reads the coordinator's peer list, which changes independently of
+            // everything else on this screen.
+            StudioPeerButton(coordinator: appState.syncCoordinator) { showingPeerSheet = true }
             ChromeButton(systemImage: "slider.horizontal.3", size: Theme.minControlSizeCompact) {
                 showingSettingsSheet = true
             }
@@ -394,6 +397,24 @@ private struct StudioRecordButton: View {
         ) {
             viewModel.toggleRecording()
         }
+    }
+}
+
+/// Opens "Connect a Device", and shows at a glance whether a Companion is actually linked — the
+/// Director side previously gave no on-screen sign that a second device was (or wasn't) receiving
+/// anything, which made a broken link indistinguishable from a working one.
+private struct StudioPeerButton: View {
+    let coordinator: SyncCoordinator
+    let action: () -> Void
+
+    var body: some View {
+        let isLinked = coordinator.hasConnectedPeers
+        ChromeButton(
+            systemImage: isLinked ? "person.2.fill" : "person.2",
+            isActive: isLinked,
+            size: Theme.minControlSizeCompact,
+            action: action
+        )
     }
 }
 
