@@ -47,18 +47,45 @@ final class SyntheticCinematicPipeline: NSObject {
     /// toggle, so a normal session pays nothing for it.
     nonisolated(unsafe) private var isPreviewEnabled = false
     /// Called on the main thread with a display-ready composited frame.
-    var onPreviewFrame: ((CGImage) -> Void)?
+    var onPreviewFrame: ((CMSampleBuffer) -> Void)?
     private var lastPreviewEmit: CFAbsoluteTime = 0
-    /// Preview is deliberately coarser than the recording: screen-sized, and well under the
-    /// capture rate. It exists to show what the effect looks like, not to be the recording.
-    private let previewTargetFPS: Double = 24
-    private let previewTargetHeight: CGFloat = 720
+    /// Preview composites at screen resolution rather than capture resolution — the effect only
+    /// has to fill a phone screen — but at the full capture rate. Running it at 24fps under a 30fps
+    /// camera produced a visible judder against the real preview, which is a large part of why the
+    /// effect looked cheap.
+    private let previewTargetFPS: Double = 30
+    /// Sized by the frame's **short** side. Sizing by height (as this did) meant an upright
+    /// portrait frame — 1080×1920 — got scaled down to 405×720 and then blown back up across a
+    /// full-height phone screen: a soft, obviously-lower-resolution image sitting on top of a
+    /// razor-sharp camera preview. Capping the short side instead keeps the composite at roughly
+    /// screen resolution in either orientation.
+    private let previewTargetShortSide: CGFloat = 720
+
+    /// Degrees of rotation between how frames arrive on this output (rotated for *capture*, so the
+    /// recorded file is upright) and how the camera preview is rotated on screen (rotated for the
+    /// current interface orientation). Normally zero: both track the device. They diverge when the
+    /// interface is orientation-locked and the phone is physically turned — at which point the
+    /// composite would be drawn 90° out of step with the preview it's covering.
+    nonisolated(unsafe) private var previewRotationDelta: Double = 0
+
+    private var previewPool: CVPixelBufferPool?
+    private var previewPoolSize: CGSize = .zero
+    private var previewFormatDescription: CMFormatDescription?
 
     func setPreviewEnabled(_ enabled: Bool) {
         processingQueue.async { [weak self] in
             self?.isPreviewEnabled = enabled
             self?.lastPreviewEmit = 0
+            if !enabled {
+                self?.previewPool = nil
+                self?.previewFormatDescription = nil
+                self?.previewPoolSize = .zero
+            }
         }
+    }
+
+    func setPreviewRotation(delta degrees: Double) {
+        previewRotationDelta = degrees
     }
 
     private var frameCount = 0
@@ -179,7 +206,7 @@ extension SyntheticCinematicPipeline: AVCaptureVideoDataOutputSampleBufferDelega
             appendRecordingFrame(sourceImage, pixelBuffer: pixelBuffer, presentationTime: presentationTime)
         }
         if isPreviewEnabled {
-            emitPreviewFrame(from: sourceImage)
+            emitPreviewFrame(from: sourceImage, presentationTime: presentationTime)
         }
     }
 
@@ -199,25 +226,114 @@ extension SyntheticCinematicPipeline: AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     /// Composites a downscaled copy for the on-screen preview. Downscaling first is what keeps
-    /// this affordable: the expensive filters (gaussian blur, mask feather, grade) all cost in
-    /// proportion to pixel count, and the result only ever has to fill a phone screen. The blur
-    /// radius is scaled to match so the preview shows the same *look*, not a different one.
-    private func emitPreviewFrame(from sourceImage: CIImage) {
+    /// this affordable: the expensive filters (blur, mask feather, grade) all cost in proportion to
+    /// pixel count, and the result only ever has to fill a phone screen. The blur radius is scaled
+    /// to match so the preview shows the same *look*, not a different one.
+    private func emitPreviewFrame(from sourceImage: CIImage, presentationTime: CMTime) {
         let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastPreviewEmit >= 1.0 / previewTargetFPS else { return }
+        // Small tolerance, or a camera running at exactly the preview rate loses every other frame
+        // to a fractional-millisecond overshoot.
+        guard now - lastPreviewEmit >= (1.0 / previewTargetFPS) - 0.002 else { return }
         lastPreviewEmit = now
 
         let extent = sourceImage.extent
-        guard extent.height > 1 else { return }
-        let scale = min(1, previewTargetHeight / extent.height)
+        let shortSide = min(extent.width, extent.height)
+        guard shortSide > 1 else { return }
+        let scale = min(1, previewTargetShortSide / shortSide)
         let scaled = scale < 1
             ? sourceImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
             : sourceImage
 
         let composited = compositor.composite(source: scaled, mask: lastMask, blurRadius: blurRadius * Double(scale))
-        guard let image = compositor.makeCGImage(composited) else { return }
+        let oriented = orientedForDisplay(composited)
+        guard let sampleBuffer = previewSampleBuffer(from: oriented, presentationTime: presentationTime) else { return }
         let callback = onPreviewFrame
-        DispatchQueue.main.async { callback?(image) }
+        DispatchQueue.main.async { callback?(sampleBuffer) }
+    }
+
+    /// Applies `previewRotationDelta` and normalises the result back to a zero origin.
+    ///
+    /// `CIImage` transforms work in a y-up space, so a clockwise on-screen rotation of N degrees is
+    /// a rotation of −N here.
+    private func orientedForDisplay(_ image: CIImage) -> CIImage {
+        let degrees = previewRotationDelta
+        guard abs(degrees) > 0.5 else { return image }
+        let rotated = image.transformed(by: CGAffineTransform(rotationAngle: -degrees * .pi / 180))
+        return rotated.transformed(by: CGAffineTransform(
+            translationX: -rotated.extent.origin.x,
+            y: -rotated.extent.origin.y
+        ))
+    }
+
+    /// Renders the composite into a pooled pixel buffer and wraps it as a `CMSampleBuffer` marked
+    /// for immediate display, which is what `AVSampleBufferDisplayLayer` wants for a live feed
+    /// (no timebase, no scheduling — show this now).
+    private func previewSampleBuffer(from image: CIImage, presentationTime: CMTime) -> CMSampleBuffer? {
+        let size = CGSize(width: image.extent.width.rounded(), height: image.extent.height.rounded())
+        guard size.width >= 1, size.height >= 1 else { return nil }
+
+        if previewPool == nil || previewPoolSize != size {
+            previewPool = Self.makePixelBufferPool(width: Int(size.width), height: Int(size.height))
+            previewPoolSize = size
+            previewFormatDescription = nil
+        }
+        guard let pool = previewPool,
+              let pixelBuffer = compositor.render(image, into: pool) else { return nil }
+
+        if previewFormatDescription == nil {
+            var description: CMFormatDescription?
+            CMVideoFormatDescriptionCreateForImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: pixelBuffer,
+                formatDescriptionOut: &description
+            )
+            previewFormatDescription = description
+        }
+        guard let formatDescription = previewFormatDescription else { return nil }
+
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let status = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard status == noErr, let sampleBuffer else { return nil }
+
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
+           CFArrayGetCount(attachments) > 0 {
+            let attachment = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+            CFDictionarySetValue(
+                attachment,
+                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+            )
+        }
+        return sampleBuffer
+    }
+
+    private static func makePixelBufferPool(width: Int, height: Int) -> CVPixelBufferPool? {
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            // IOSurface-backed, so the display layer can show the buffer without a CPU copy.
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ]
+        var pool: CVPixelBufferPool?
+        CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            [kCVPixelBufferPoolMinimumBufferCountKey as String: 4] as CFDictionary,
+            attributes as CFDictionary,
+            &pool
+        )
+        return pool
     }
 }
 
