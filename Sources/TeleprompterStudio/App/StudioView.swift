@@ -22,20 +22,6 @@ struct StudioView: View {
     /// Landscape on iPhone: short screen, wide screen. Both the chrome layout and the prompter
     /// card's proportions key off this.
     private var isCompactHeight: Bool { verticalSizeClass == .compact }
-    /// Set once the first real layout pass has run, so opening Studio while already in landscape
-    /// gets landscape-shaped defaults instead of portrait ones stretched sideways.
-    @State private var didApplyInitialLayout = false
-
-    /// The prompter text is the floating, hand-draggable element (not the record controls).
-    /// Position is stored as a screen-fraction so it stays valid across rotation/resizing
-    /// instead of an absolute point that could land off-screen.
-    @State private var promptPositionFraction = CGPoint(x: 0.5, y: 0.42)
-    @State private var promptDragStart: CGPoint?
-    @State private var promptSize: CGSize = .zero
-    /// Card width as a fraction of screen width; adjusted by the corner resize grip alongside
-    /// `viewModel.overlayHeightFraction`, so the whole card is hand-sizable on the fly.
-    @State private var promptWidthFraction: Double = 0.92
-    @State private var resizeStart: CGSize?
 
     init(script: Script) {
         _viewModel = State(initialValue: CameraStudioViewModel(script: script))
@@ -71,7 +57,13 @@ struct StudioView: View {
                     StudioFocusReticle(viewModel: viewModel)
                 }
 
-                floatingPrompterOverlay(in: screen.size)
+                FloatingPrompterCard(
+                    document: viewModel.document,
+                    controller: viewModel.prompterController,
+                    opacity: viewModel.overlayOpacity,
+                    heightFraction: $viewModel.overlayHeightFraction,
+                    screenSize: screen.size
+                )
 
                 VStack {
                     topBar
@@ -115,136 +107,6 @@ struct StudioView: View {
         // request itself — otherwise a Companion can never be accepted mid-session.
         .peerInviteAlert(coordinator: appState.syncCoordinator)
         .preferredColorScheme(.dark)
-    }
-
-    /// The scrolling script, as a floating card: drag the top handle to move it, the bottom-right
-    /// grip to resize it, and the script itself to nudge the reading position by hand.
-    private func floatingPrompterOverlay(in screenSize: CGSize) -> some View {
-        VStack(spacing: 0) {
-            promptDragHandle(screenSize: screenSize)
-
-            // Hit-testing is intentionally ON: the prompter is a real scroll view now, so the
-            // reader can nudge the script by hand mid-take. Tap-to-focus still works anywhere
-            // outside the card, and the card can be dragged out of the way by its handle.
-            NativePrompterView(document: viewModel.document, controller: viewModel.prompterController)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
-                .frame(height: screenSize.height * viewModel.overlayHeightFraction)
-                .overlay(alignment: .bottomTrailing) { resizeGrip(screenSize: screenSize) }
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium)
-                .stroke(Theme.border, lineWidth: 1)
-                .allowsHitTesting(false)
-        )
-        .frame(width: screenSize.width * promptWidthFraction)
-        .opacity(viewModel.overlayOpacity)
-        .onGeometryChange(for: CGSize.self, of: \.size) { promptSize = $0 }
-        .position(
-            x: promptPositionFraction.x * screenSize.width,
-            y: promptPositionFraction.y * screenSize.height
-        )
-        .animation(Theme.smoothSpring, value: screenSize.width) // re-clamp smoothly on rotation
-        .onAppear { applyInitialLayout(for: screenSize) }
-        .onChange(of: screenSize) { oldSize, newSize in
-            reflowCard(from: oldSize, to: newSize)
-        }
-    }
-
-    /// Rotation used to stretch the card: its width and height are stored as fractions of the
-    /// screen, so a card that was a comfortable 92%-wide column in portrait became a 92%-wide,
-    /// half-height *band* in landscape — text reflowed to enormous line lengths, the card covering
-    /// the frame, nothing where you left it. This converts the card's actual point size through the
-    /// rotation instead, so it stays the same physical size on screen and only gets clamped when
-    /// the new screen genuinely can't fit it.
-    private func reflowCard(from oldSize: CGSize, to newSize: CGSize) {
-        guard oldSize.width > 0, oldSize.height > 0, newSize.width > 0, newSize.height > 0 else { return }
-        let widthPoints = oldSize.width * promptWidthFraction
-        let heightPoints = oldSize.height * viewModel.overlayHeightFraction
-        promptWidthFraction = min(max(widthPoints / newSize.width, 0.35), 1.0)
-        viewModel.overlayHeightFraction = min(max(heightPoints / newSize.height, 0.15), 0.92)
-        promptPositionFraction = clampedFraction(promptPositionFraction, size: promptSize, screenSize: newSize)
-    }
-
-    /// Landscape-first defaults for a Studio opened while the phone is already sideways. A
-    /// full-width card on a landscape screen is a 700pt-wide line of text, which is unreadable at
-    /// prompter speed; a narrower column sitting higher up leaves the chrome its own space.
-    private func applyInitialLayout(for screenSize: CGSize) {
-        guard !didApplyInitialLayout, screenSize.width > 0, screenSize.height > 0 else { return }
-        didApplyInitialLayout = true
-        guard screenSize.width > screenSize.height else { return }
-        promptWidthFraction = 0.6
-        viewModel.overlayHeightFraction = 0.52
-        promptPositionFraction = CGPoint(x: 0.5, y: 0.36)
-    }
-
-    private func promptDragHandle(screenSize: CGSize) -> some View {
-        Capsule()
-            .fill(Theme.textTertiary)
-            .frame(width: 44, height: 5)
-            .padding(.vertical, Theme.spacingS)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.001)) // keeps the whole handle row tappable, not just the capsule glyph
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .local)
-                    .onChanged { value in
-                        let start = promptDragStart ?? promptPositionFraction
-                        if promptDragStart == nil { promptDragStart = start }
-                        promptPositionFraction = clampedFraction(
-                            CGPoint(
-                                x: start.x + value.translation.width / max(screenSize.width, 1),
-                                y: start.y + value.translation.height / max(screenSize.height, 1)
-                            ),
-                            size: promptSize,
-                            screenSize: screenSize
-                        )
-                    }
-                    .onEnded { _ in promptDragStart = nil }
-            )
-    }
-
-    /// Bottom-right corner grip: drag to resize the card's width and height live. Sizes are kept
-    /// as screen fractions (same as the position) so a card sized in portrait stays sane in
-    /// landscape. Height writes straight into `viewModel.overlayHeightFraction`, the same value
-    /// the Studio Settings "Height" slider drives, so the two controls stay in agreement.
-    private func resizeGrip(screenSize: CGSize) -> some View {
-        Image(systemName: "arrow.down.right.and.arrow.up.left")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(Theme.textSecondary)
-            .frame(width: 34, height: 34)
-            .background(Color.black.opacity(0.55), in: Circle())
-            .overlay(Circle().stroke(Theme.border, lineWidth: 1))
-            .padding(Theme.spacingXS)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                    .onChanged { value in
-                        let start = resizeStart ?? CGSize(
-                            width: promptWidthFraction,
-                            height: viewModel.overlayHeightFraction
-                        )
-                        if resizeStart == nil { resizeStart = start }
-                        // Doubled because the card is center-anchored: dragging the corner by N
-                        // points grows the card by N on that side and N on the opposite one.
-                        let widthDelta = 2 * value.translation.width / max(screenSize.width, 1)
-                        let heightDelta = 2 * value.translation.height / max(screenSize.height, 1)
-                        promptWidthFraction = min(max(start.width + widthDelta, 0.35), 1.0)
-                        viewModel.overlayHeightFraction = min(max(start.height + heightDelta, 0.15), 0.92)
-                    }
-                    .onEnded { _ in resizeStart = nil }
-            )
-    }
-
-    /// Keeps the card's center far enough from every edge that its own bounds (half-extent,
-    /// converted to fractions of the current screen size) never leave the visible screen.
-    private func clampedFraction(_ point: CGPoint, size: CGSize, screenSize: CGSize) -> CGPoint {
-        guard screenSize.width > 0, screenSize.height > 0 else { return point }
-        let halfWidthFraction = (size.width / 2 + Theme.spacingS) / screenSize.width
-        let halfHeightFraction = (size.height / 2 + Theme.spacingS) / screenSize.height
-        return CGPoint(
-            x: min(max(point.x, halfWidthFraction), 1 - halfWidthFraction),
-            y: min(max(point.y, halfHeightFraction), 1 - halfHeightFraction)
-        )
     }
 
     /// Camera-side failures used to fail silently (see `CameraStudioViewModel.start()`), which

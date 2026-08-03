@@ -100,14 +100,19 @@ final class AdaptivePreviewStreamer: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
+    /// The ceiling is higher than the old 540p/0.5 because the Companion now shows the monitor
+    /// full-screen rather than as a 160pt thumbnail, and a thumbnail-grade stream blown up to a
+    /// whole phone screen looks like a fault. It's still only *reached* on a link and a device that
+    /// have kept up through the ladder — the starting point and the whole step-down path are
+    /// unchanged, so nothing degrades on a connection that was already struggling.
     private func stepUp() {
         guard isEnabled else { return }
-        if targetHeight < 540 {
+        if targetHeight < 720 {
             targetHeight += 90
         } else if targetFPS < 18 {
             targetFPS += 4
-        } else if jpegQuality < 0.5 {
-            jpegQuality += 0.1
+        } else if jpegQuality < 0.6 {
+            jpegQuality += 0.05
         }
     }
 
