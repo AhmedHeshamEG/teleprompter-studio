@@ -20,6 +20,10 @@ struct StudioView: View {
     @State private var promptPositionFraction = CGPoint(x: 0.5, y: 0.42)
     @State private var promptDragStart: CGPoint?
     @State private var promptSize: CGSize = .zero
+    /// Card width as a fraction of screen width; adjusted by the corner resize grip alongside
+    /// `viewModel.overlayHeightFraction`, so the whole card is hand-sizable on the fly.
+    @State private var promptWidthFraction: Double = 0.92
+    @State private var resizeStart: CGSize?
 
     init(script: Script) {
         _viewModel = State(initialValue: CameraStudioViewModel(script: script))
@@ -89,20 +93,26 @@ struct StudioView: View {
         .preferredColorScheme(.dark)
     }
 
-    /// The scrolling script, as a floating card the user can drag anywhere on screen by its
-    /// handle. Only the handle is hit-testable — `NativePrompterView` itself stays
-    /// `allowsHitTesting(false)` so taps everywhere else (e.g. tap-to-focus on the camera
-    /// underneath) keep working exactly as before.
+    /// The scrolling script, as a floating card: drag the top handle to move it, the bottom-right
+    /// grip to resize it, and the script itself to nudge the reading position by hand.
     private func floatingPrompterOverlay(in screenSize: CGSize) -> some View {
         VStack(spacing: 0) {
             promptDragHandle(screenSize: screenSize)
 
+            // Hit-testing is intentionally ON: the prompter is a real scroll view now, so the
+            // reader can nudge the script by hand mid-take. Tap-to-focus still works anywhere
+            // outside the card, and the card can be dragged out of the way by its handle.
             NativePrompterView(document: viewModel.document, controller: viewModel.prompterController)
-                .allowsHitTesting(false)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
                 .frame(height: screenSize.height * viewModel.overlayHeightFraction)
+                .overlay(alignment: .bottomTrailing) { resizeGrip(screenSize: screenSize) }
         }
-        .frame(width: screenSize.width * 0.92)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium)
+                .stroke(Theme.border, lineWidth: 1)
+                .allowsHitTesting(false)
+        )
+        .frame(width: screenSize.width * promptWidthFraction)
         .opacity(viewModel.overlayOpacity)
         .onGeometryChange(for: CGSize.self, of: \.size) { promptSize = $0 }
         .position(
@@ -141,6 +151,38 @@ struct StudioView: View {
             )
     }
 
+    /// Bottom-right corner grip: drag to resize the card's width and height live. Sizes are kept
+    /// as screen fractions (same as the position) so a card sized in portrait stays sane in
+    /// landscape. Height writes straight into `viewModel.overlayHeightFraction`, the same value
+    /// the Studio Settings "Height" slider drives, so the two controls stay in agreement.
+    private func resizeGrip(screenSize: CGSize) -> some View {
+        Image(systemName: "arrow.down.right.and.arrow.up.left")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Theme.textSecondary)
+            .frame(width: 34, height: 34)
+            .background(Color.black.opacity(0.55), in: Circle())
+            .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+            .padding(Theme.spacingXS)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                    .onChanged { value in
+                        let start = resizeStart ?? CGSize(
+                            width: promptWidthFraction,
+                            height: viewModel.overlayHeightFraction
+                        )
+                        if resizeStart == nil { resizeStart = start }
+                        // Doubled because the card is center-anchored: dragging the corner by N
+                        // points grows the card by N on that side and N on the opposite one.
+                        let widthDelta = 2 * value.translation.width / max(screenSize.width, 1)
+                        let heightDelta = 2 * value.translation.height / max(screenSize.height, 1)
+                        promptWidthFraction = min(max(start.width + widthDelta, 0.35), 1.0)
+                        viewModel.overlayHeightFraction = min(max(start.height + heightDelta, 0.15), 0.92)
+                    }
+                    .onEnded { _ in resizeStart = nil }
+            )
+    }
+
     /// Keeps the card's center far enough from every edge that its own bounds (half-extent,
     /// converted to fractions of the current screen size) never leave the visible screen.
     private func clampedFraction(_ point: CGPoint, size: CGSize, screenSize: CGSize) -> CGPoint {
@@ -165,6 +207,8 @@ struct StudioView: View {
             .padding(.vertical, Theme.spacingS)
             .background(Theme.accent, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
             .padding(.horizontal, Theme.spacingM)
+            .contentShape(Rectangle())
+            .onTapGesture { viewModel.errorMessage = nil }
     }
 
     private var topBar: some View {
@@ -209,18 +253,17 @@ struct StudioView: View {
                     }
                 }
 
-                RecordButton(isRecording: viewModel.recordingCoordinator.isRecording) {
-                    if viewModel.recordingCoordinator.isRecording {
-                        viewModel.stopRecordingIfNeeded()
-                    } else {
-                        viewModel.startCountdownAndRecord()
-                    }
+                RecordButton(
+                    isRecording: viewModel.recordingCoordinator.isRecording,
+                    isArmed: viewModel.isArmed
+                ) {
+                    viewModel.toggleRecording()
                 }
 
                 if viewModel.runMode == .record {
-                    ChromeButton(systemImage: "square.grid.3x3", isActive: viewModel.showGrid, size: Theme.minControlSizeCompact) {
-                        viewModel.showGrid.toggle()
-                    }
+                    // The framing grid lives in Studio Settings now (and is on by default) — it's
+                    // a set-once framing preference, not something worth a permanent slot in the
+                    // thumb-reachable chrome next to the record button.
                     ChromeButton(systemImage: viewModel.session.torchOn ? "bolt.fill" : "bolt.slash", size: Theme.minControlSizeCompact) {
                         viewModel.session.setTorch(on: !viewModel.session.torchOn)
                     }
@@ -233,18 +276,37 @@ struct StudioView: View {
 
 private struct RecordButton: View {
     let isRecording: Bool
+    /// Countdown is running: the button pulses so the tap clearly registered, and tapping again
+    /// calls the take off instead of doing nothing for three seconds.
+    var isArmed: Bool = false
     let action: () -> Void
+
+    @State private var pulse = false
 
     var body: some View {
         Button(action: action) {
             ZStack {
-                Circle().stroke(Color.white, lineWidth: 4).frame(width: 76, height: 76)
+                Circle()
+                    .stroke(isArmed ? Theme.accent : Color.white, lineWidth: 4)
+                    .frame(width: 76, height: 76)
                 RoundedRectangle(cornerRadius: isRecording ? 8 : 30)
                     .fill(Theme.record)
                     .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
+                    .opacity(isArmed && pulse ? 0.35 : 1)
                     .animation(Theme.quickSpring, value: isRecording)
             }
+            // The 76pt ring is the visual; this is the touch target, so the edges of the button
+            // aren't dead zones.
+            .frame(width: 88, height: 88)
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .onChange(of: isArmed) { _, armed in
+            if armed {
+                withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { pulse = true }
+            } else {
+                withAnimation(.default) { pulse = false }
+            }
+        }
     }
 }

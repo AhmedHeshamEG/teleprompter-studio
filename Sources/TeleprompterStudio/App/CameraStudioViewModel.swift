@@ -34,7 +34,9 @@ final class CameraStudioViewModel {
     var overlayOpacity: Double = 0.92
     var overlayHeightFraction: Double = 0.55
 
-    var showGrid = false
+    /// On by default — framing help you have to go turn on every session isn't framing help.
+    /// Toggled from Studio Settings.
+    var showGrid = true
     var focusPoint: CGPoint?
     var isPermissionDenied = false
     var errorMessage: String?
@@ -42,6 +44,13 @@ final class CameraStudioViewModel {
     private var syncCoordinator: SyncCoordinator?
     private var modelContext: ModelContext?
     private var playbackReportTimer: Timer?
+    /// The pending "countdown finished → start recording" task. Held so tapping the record button
+    /// again during the countdown cancels the take instead of arming a second one.
+    private var armedRecordTask: Task<Void, Never>?
+
+    /// True between tapping record and the countdown actually starting capture — the record button
+    /// needs to read as "armed" immediately, not stay idle-looking for three seconds.
+    var isArmed = false
 
     var document: PrompterDocument {
         PrompterDocument(markdown: script.bodyMarkdown, style: script.style ?? ScriptStyle())
@@ -87,6 +96,9 @@ final class CameraStudioViewModel {
         prompterController.onDidFinish = { [weak self] in
             self?.stopRecordingIfNeeded()
         }
+        recordingCoordinator.onRecordingFailed = { [weak self] message in
+            self?.errorMessage = message
+        }
         prompterController.loadDocument(document)
         startPlaybackReporting()
 
@@ -97,8 +109,11 @@ final class CameraStudioViewModel {
         }
         do {
             try await session.configure()
-            try? session.setResolution(resolution, fps: fps)
+            // Resolution is applied *after* the session is running, and failures are non-fatal:
+            // a device with no exact 1080p/4K format at the requested fps simply keeps the
+            // session preset it already negotiated rather than losing its capture connections.
             session.start()
+            session.applyResolution(resolution, fps: fps)
             levelMonitor.start()
         } catch {
             errorMessage = error.localizedDescription
@@ -106,6 +121,7 @@ final class CameraStudioViewModel {
     }
 
     func stop() {
+        cancelArmedRecording()
         session.stop()
         levelMonitor.stop()
         playbackReportTimer?.invalidate()
@@ -113,6 +129,13 @@ final class CameraStudioViewModel {
     }
 
     // MARK: User actions
+
+    /// Re-applies the chosen resolution/frame rate to the live session. Called when the Studio
+    /// Settings pickers change — before, changing them updated the picker and nothing else until
+    /// the next time Studio was opened.
+    func applyCaptureSettings() {
+        session.applyResolution(resolution, fps: fps)
+    }
 
     func toggleFacing() {
         Task {
@@ -144,20 +167,49 @@ final class CameraStudioViewModel {
         }
     }
 
+    /// Tapping record while a countdown is already running cancels it — otherwise the only way out
+    /// was to wait for a take you no longer wanted to start.
+    func toggleRecording() {
+        if isArmed {
+            cancelArmedRecording()
+        } else if recordingCoordinator.isRecording {
+            stopRecordingIfNeeded()
+        } else {
+            startCountdownAndRecord()
+        }
+    }
+
     func startCountdownAndRecord() {
+        errorMessage = nil
         guard runMode == .record else {
             prompterController.startCountdown(seconds: 3)
             return
         }
         prompterController.startCountdown(seconds: 3)
-        Task {
+        isArmed = true
+        armedRecordTask?.cancel()
+        armedRecordTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            beginRecording()
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            self.isArmed = false
+            self.beginRecording()
         }
     }
 
+    func cancelArmedRecording() {
+        armedRecordTask?.cancel()
+        armedRecordTask = nil
+        isArmed = false
+        prompterController.cancelCountdown()
+    }
+
     func beginRecording() {
-        guard runMode == .record, let modelContext else { return }
+        guard runMode == .record else { return }
+        guard let modelContext else {
+            errorMessage = "Studio isn't ready yet — reopen this script and try again."
+            return
+        }
         do {
             try recordingCoordinator.start(
                 session: session,

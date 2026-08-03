@@ -18,6 +18,16 @@ struct StudioSettingsSheet: View {
                         Text("60 fps").tag(60.0)
                     }
                 }
+                .onChange(of: viewModel.resolution) { _, _ in viewModel.applyCaptureSettings() }
+                .onChange(of: viewModel.fps) { _, _ in viewModel.applyCaptureSettings() }
+
+                Section {
+                    Toggle("Rule-of-Thirds Grid", isOn: $viewModel.showGrid)
+                } header: {
+                    Text("Framing")
+                } footer: {
+                    Text("Shows a 3×3 composition grid over the camera preview. It's never recorded into the video.")
+                }
 
                 Section {
                     Picker("Microphone", selection: Binding(
@@ -45,7 +55,7 @@ struct StudioSettingsSheet: View {
                 } header: {
                     Text("Teleprompter Overlay")
                 } footer: {
-                    Text("Drag the handle above the script text in Studio to reposition it anywhere on screen.")
+                    Text("Drag the handle above the script text to move the card, or its bottom-right grip to resize it. You can also nudge the script itself by hand mid-take.")
                 }
 
                 Section {
