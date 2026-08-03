@@ -12,6 +12,12 @@ final class PrompterController {
 
     private(set) var isPlaying = false
     private(set) var progress: Double = 0
+    /// Whether the WKWebView has actually finished loading and confirmed it's ready to render
+    /// (the JS side posts a "ready" message on `window.onload`). Callers use this to show a
+    /// plain-native fallback rendering of the script until the rich WebView one is confirmed
+    /// working, so the script is never silently blank if the WebView fails to load for any
+    /// reason (bad resource path, WKWebView process crash, etc.).
+    private(set) var isPageReady = false
     var speedPxPerSec: Double = 90
     var fontSize: Double = 46
     var guideMode: PrompterGuideMode = .line
@@ -26,6 +32,7 @@ final class PrompterController {
     func handleMessage(type: String, body: [String: Any]) {
         switch type {
         case "ready":
+            isPageReady = true
             onReady?()
         case "progress":
             if let value = body["value"] as? Double { progress = value }

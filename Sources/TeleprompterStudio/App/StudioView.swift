@@ -48,6 +48,9 @@ struct StudioView: View {
 
                 VStack {
                     topBar
+                    if let errorMessage = viewModel.errorMessage {
+                        cameraErrorBanner(errorMessage)
+                    }
                     Spacer()
                     if viewModel.resolvedCinematicKind == .synthetic {
                         Badge(text: "Simulated Cinematic", color: Theme.accent)
@@ -94,9 +97,19 @@ struct StudioView: View {
         VStack(spacing: 0) {
             promptDragHandle(screenSize: screenSize)
 
-            PrompterWebView(document: viewModel.document, controller: viewModel.prompterController)
-                .frame(height: screenSize.height * viewModel.overlayHeightFraction)
-                .allowsHitTesting(false)
+            ZStack {
+                // Guaranteed-visible plain-text rendering of the script, shown until the rich
+                // WKWebView renderer confirms it actually loaded. If the WebView never becomes
+                // ready for any reason, this stays up rather than leaving the screen blank.
+                if !viewModel.prompterController.isPageReady {
+                    nativePrompterFallback
+                }
+
+                PrompterWebView(document: viewModel.document, controller: viewModel.prompterController)
+                    .opacity(viewModel.prompterController.isPageReady ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .frame(height: screenSize.height * viewModel.overlayHeightFraction)
         }
         .frame(width: screenSize.width * 0.92)
         .opacity(viewModel.overlayOpacity)
@@ -109,6 +122,21 @@ struct StudioView: View {
         .onChange(of: screenSize) { _, newSize in
             promptPositionFraction = clampedFraction(promptPositionFraction, size: promptSize, screenSize: newSize)
         }
+    }
+
+    /// Plain SwiftUI text, no WebKit involved at all — deliberately dumb (no markdown styling,
+    /// no scrolling animation) so it has nothing else that could fail. Just needs to put the
+    /// user's actual script on screen.
+    private var nativePrompterFallback: some View {
+        ScrollView(showsIndicators: false) {
+            Text(viewModel.script.bodyMarkdown)
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Theme.spacingM)
+        }
+        .background(Color.black.opacity(0.6))
     }
 
     private func promptDragHandle(screenSize: CGSize) -> some View {
@@ -147,6 +175,20 @@ struct StudioView: View {
             x: min(max(point.x, halfWidthFraction), 1 - halfWidthFraction),
             y: min(max(point.y, halfHeightFraction), 1 - halfHeightFraction)
         )
+    }
+
+    /// Camera-side failures used to fail silently (see `CameraStudioViewModel.start()`), which
+    /// made real problems indistinguishable from "it's just not working" — this makes them
+    /// visible instead of swallowed. The prompter text no longer depends on the camera at all,
+    /// so this only ever affects the camera preview/recording, never the script.
+    private func cameraErrorBanner(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.black)
+            .padding(.horizontal, Theme.spacingM)
+            .padding(.vertical, Theme.spacingS)
+            .background(Theme.accent, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
+            .padding(.horizontal, Theme.spacingM)
     }
 
     private var topBar: some View {
