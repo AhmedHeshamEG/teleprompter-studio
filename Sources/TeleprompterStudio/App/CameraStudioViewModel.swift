@@ -78,6 +78,18 @@ final class CameraStudioViewModel {
     }
 
     func start() async {
+        // The prompter script must always load, independent of anything camera-related — it's
+        // a text overlay, not a byproduct of camera setup. Previously this was nested inside the
+        // camera permission guard and the `session.configure()` `do`/`catch`, so any camera-side
+        // failure (permission not granted, no matching format, anything) silently left the
+        // prompter blank forever, with no visible error. That's the actual bug behind "the
+        // prompter text isn't shown" reports.
+        prompterController.onDidFinish = { [weak self] in
+            self?.stopRecordingIfNeeded()
+        }
+        prompterController.loadDocument(document)
+        startPlaybackReporting()
+
         let status = await CameraAuthorization.requestAll()
         guard status.camera == .authorized, status.microphone == .authorized else {
             isPermissionDenied = true
@@ -88,11 +100,6 @@ final class CameraStudioViewModel {
             try? session.setResolution(resolution, fps: fps)
             session.start()
             levelMonitor.start()
-            prompterController.loadDocument(document)
-            prompterController.onDidFinish = { [weak self] in
-                self?.stopRecordingIfNeeded()
-            }
-            startPlaybackReporting()
         } catch {
             errorMessage = error.localizedDescription
         }
