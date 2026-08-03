@@ -39,8 +39,11 @@ body.font-Courier-New #content { font-family: "Courier New", monospace; }
 }
 #scroller::-webkit-scrollbar { display: none; }
 
+/* Text starts just below the reading guide (center) and scrolls up through it, rather than
+   starting almost entirely off-screen — a 90vh lead-in meant the first line was invisible
+   until you pressed play and scrolled ~90% of a screen's worth. */
 #top-spacer, #bottom-spacer {
-  height: 90vh;
+  height: 40vh;
   width: 100%;
 }
 
