@@ -99,7 +99,7 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
     private var lastLayoutWidth: CGFloat = 0
     private var lastLayoutHeight: CGFloat = 0
 
-    var speedPxPerSec: Double = 90
+    var speedPxPerSec: Double = PrompterPreferences.defaultSpeed
     var isUserScrollEnabled = true {
         didSet { isScrollEnabled = isUserScrollEnabled }
     }

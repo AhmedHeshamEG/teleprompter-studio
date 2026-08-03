@@ -1,22 +1,35 @@
+import AVFoundation
+import CoreMedia
 import SwiftUI
 import UIKit
 
-/// Receives composited cinematic frames and puts them straight on a layer.
+/// Destination for live cinematic composite frames.
 ///
-/// Deliberately *not* `@Observable` state: at 24 fps, publishing each frame into SwiftUI would
-/// invalidate the whole Studio view tree 24 times a second, which is precisely the kind of thing
-/// that makes an app feel heavy and makes buttons miss taps. Assigning `CALayer.contents` is a
-/// direct, allocation-free handoff that SwiftUI never sees.
+/// Frames arrive as `CMSampleBuffer`s and are enqueued straight into an
+/// `AVSampleBufferDisplayLayer`. The first version instead created a `CGImage` per frame and
+/// assigned it to `CALayer.contents`: `CIContext.createCGImage` forces a synchronous render plus a
+/// fresh allocation for every frame, which is why the cinematic preview ran well under the camera's
+/// rate and lagged visibly behind the real preview underneath it. The display layer takes a
+/// GPU-resident pixel buffer and shows it — no readback, no per-frame allocation, and SwiftUI is
+/// never involved, so nothing in the view tree is invalidated at frame rate.
 @MainActor
 final class CinematicPreviewSink {
-    weak var layer: CALayer?
+    weak var layer: AVSampleBufferDisplayLayer?
 
-    func submit(_ image: CGImage) {
-        layer?.contents = image
+    func submit(_ sampleBuffer: CMSampleBuffer) {
+        guard let layer else { return }
+        // A display layer that hits an enqueue error stays failed until flushed, and would
+        // otherwise show one frozen frame for the rest of the session.
+        if layer.status == .failed { layer.flush() }
+        if #available(iOS 17.0, *) {
+            layer.sampleBufferRenderer.enqueue(sampleBuffer)
+        } else {
+            layer.enqueue(sampleBuffer)
+        }
     }
 
     func clear() {
-        layer?.contents = nil
+        layer?.flushAndRemoveImage()
     }
 }
 
@@ -26,23 +39,30 @@ final class CinematicPreviewSink {
 struct CinematicPreviewView: UIViewRepresentable {
     let sink: CinematicPreviewSink
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .black
+    func makeUIView(context: Context) -> DisplayView {
+        let view = DisplayView()
         view.isUserInteractionEnabled = false
+        // Clear, not black: until the first composited frame arrives — and if the pipeline ever
+        // fails to produce one — the real camera preview stays visible underneath instead of the
+        // screen going black.
+        view.backgroundColor = .clear
         // Matches `AVCaptureVideoPreviewLayer`'s `.resizeAspectFill`, so switching Cinematic on
         // and off doesn't visibly re-frame the shot.
-        view.layer.contentsGravity = .resizeAspectFill
-        view.layer.masksToBounds = true
-        sink.layer = view.layer
+        view.displayLayer.videoGravity = .resizeAspectFill
+        sink.layer = view.displayLayer
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        sink.layer = uiView.layer
+    func updateUIView(_ uiView: DisplayView, context: Context) {
+        sink.layer = uiView.displayLayer
     }
 
-    static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
-        uiView.layer.contents = nil
+    static func dismantleUIView(_ uiView: DisplayView, coordinator: ()) {
+        uiView.displayLayer.flushAndRemoveImage()
+    }
+
+    final class DisplayView: UIView {
+        override static var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
+        var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
     }
 }

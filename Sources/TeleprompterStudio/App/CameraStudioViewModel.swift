@@ -102,8 +102,13 @@ final class CameraStudioViewModel {
         previewStreamer.onAvailabilityChanged = { [weak self] available in
             Task { @MainActor in self?.syncCoordinator?.publishPreviewAvailability(available) }
         }
-        recordingCoordinator.synthetic.onPreviewFrame = { [weak self] image in
-            Task { @MainActor in self?.cinematicPreview.submit(image) }
+        recordingCoordinator.synthetic.onPreviewFrame = { [weak self] sampleBuffer in
+            Task { @MainActor in self?.cinematicPreview.submit(sampleBuffer) }
+        }
+        session.onRotationAnglesChanged = { [weak self] preview, capture in
+            Task { @MainActor in
+                self?.recordingCoordinator.synthetic.setPreviewRotation(delta: Double(preview - capture))
+            }
         }
     }
 

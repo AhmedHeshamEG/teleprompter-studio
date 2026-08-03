@@ -3,12 +3,20 @@ import SwiftUI
 /// Reusable prompter transport chrome: progress bar, play/pause, restart, 3-2-1 countdown, and
 /// the toggle for the speed/font-size panel.
 ///
-/// The panel itself is deliberately **not** rendered here — see `PrompterSlidersPanel`. The screen
-/// that owns this view presents it as a system sheet, so it can never sit ambiguously on top of
-/// (or underneath) the record button.
+/// The panel is presented from the toggle button itself (see `PrompterSlidersPanel`) so that in
+/// landscape it can appear as a popover anchored to the button rather than a card that swallows
+/// the whole screen.
 struct PrompterControlsView: View {
     @Bindable var controller: PrompterController
     @Binding var showingSliders: Bool
+
+    /// Landscape on iPhone. Read here, in a real `View.body`, and handed to the panel explicitly —
+    /// the size class seen *inside* presented content describes the presentation, not the screen
+    /// that put it there, so deciding the adaptation from within the panel would be reading the
+    /// wrong value.
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    private var isCompactHeight: Bool { verticalSizeClass == .compact }
 
     var body: some View {
         VStack(spacing: Theme.spacingM) {
@@ -32,9 +40,18 @@ struct PrompterControlsView: View {
                 controller.startCountdown(seconds: 3)
             }
 
-            // No `withAnimation` — the sheet brings its own presentation animation.
+            // No `withAnimation` — the presentation brings its own animation.
             ChromeButton(systemImage: "slider.horizontal.3", isActive: showingSliders, size: Theme.minControlSizeCompact) {
                 showingSliders.toggle()
+            }
+            // Anchored to the button, so in landscape it opens as a popover pointing at the
+            // control that opened it. A sheet in landscape on iPhone is presented at full height
+            // no matter what detents it asks for — which is exactly the "it covers everything"
+            // problem. `presentationCompactAdaptation` inside the panel picks sheet (portrait) or
+            // popover (landscape); this is the standard platform behaviour for a small options
+            // panel hanging off a toolbar button.
+            .popover(isPresented: $showingSliders) {
+                PrompterSlidersPanel(controller: controller, prefersPopover: isCompactHeight)
             }
         }
     }
@@ -66,17 +83,27 @@ private struct PrompterProgressBar: View {
     }
 }
 
-/// Speed / font-size / guide panel, shown in a short system sheet (`.presentationDetents`) that
-/// only covers the bottom of the screen.
+/// Speed / font-size / guide panel.
 ///
-/// It's a sheet rather than a hand-rolled overlay because that's the platform answer to exactly
-/// this problem: it can't overlap the record button (the sheet owns its own space and blocks the
-/// content behind it), it comes with the standard grabber, swipe-to-dismiss, blurred material and
-/// spring animation, and it needs no custom scrim, no tap-swallowing tricks, and no guessing about
-/// which control a touch belonged to. The panel content itself is the same set of controls as
-/// before — nothing about the look of the sliders has changed, only where they live.
+/// Presented by the platform rather than hand-rolled as an overlay: it can't overlap the record
+/// button, it comes with the standard grabber, dismissal, blurred material and spring animation,
+/// and needs no custom scrim or tap-swallowing tricks. In portrait that's a short sheet pinned to
+/// the bottom; in landscape (where an iPhone sheet is always full-height, covering the camera, the
+/// script and every control) it's a popover anchored to the button that opened it.
 struct PrompterSlidersPanel: View {
-    @Bindable var controller: PrompterController
+    let controller: PrompterController
+    /// Set by the presenting view when the screen is landscape-on-iPhone.
+    var prefersPopover: Bool = false
+
+    /// The sliders write through `controller.setSpeed` / `setFontSize` rather than binding to the
+    /// properties directly, because those setters are what persist the value for next launch.
+    private var speed: Binding<Double> {
+        Binding(get: { controller.speedPxPerSec }, set: { controller.setSpeed($0) })
+    }
+
+    private var fontSize: Binding<Double> {
+        Binding(get: { controller.fontSize }, set: { controller.setFontSize($0) })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacingL) {
@@ -87,14 +114,14 @@ struct PrompterSlidersPanel: View {
             LabeledSlider(
                 label: "Speed",
                 systemImage: "speedometer",
-                value: $controller.speedPxPerSec,
+                value: speed,
                 range: 10...400
             ) { "\(Int($0)) px/s" }
 
             LabeledSlider(
                 label: "Font Size",
                 systemImage: "textformat.size",
-                value: $controller.fontSize,
+                value: fontSize,
                 range: 18...120
             ) { "\(Int($0)) pt" }
 
@@ -118,9 +145,14 @@ struct PrompterSlidersPanel: View {
         }
         .padding(.horizontal, Theme.spacingL)
         .padding(.top, Theme.spacingL)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, prefersPopover ? Theme.spacingL : 0)
+        // A popover sizes itself from its content, so it needs a width and height to aim for; a
+        // sheet takes its height from the detent instead and spans the screen.
+        .frame(width: prefersPopover ? 320 : nil)
+        .frame(maxWidth: prefersPopover ? nil : .infinity, alignment: .leading)
+        .presentationCompactAdaptation(prefersPopover ? .popover : .sheet)
         .presentationDetents([.height(300)])
-        .presentationDragIndicator(.visible)
+        .presentationDragIndicator(prefersPopover ? .hidden : .visible)
         .presentationBackground(.thinMaterial)
         .presentationCornerRadius(Theme.cornerRadiusLarge)
         .presentationBackgroundInteraction(.disabled)
