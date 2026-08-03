@@ -56,15 +56,15 @@ final class BokehCompositor {
     private func cinematicGrade(_ image: CIImage, extent: CGRect) -> CIImage {
         let colorFilter = CIFilter.colorControls()
         colorFilter.inputImage = image
-        colorFilter.saturation = 1.12
-        colorFilter.contrast = 1.08
-        colorFilter.brightness = -0.01
+        colorFilter.saturation = 1.2
+        colorFilter.contrast = 1.14
+        colorFilter.brightness = -0.02
         let graded = colorFilter.outputImage ?? image
 
         let vignette = CIFilter.vignette()
         vignette.inputImage = graded
-        vignette.intensity = 0.9
-        vignette.radius = Float(min(extent.width, extent.height) * 0.75)
+        vignette.intensity = 1.4
+        vignette.radius = Float(min(extent.width, extent.height) * 0.65)
         return vignette.outputImage?.cropped(to: extent) ?? graded
     }
 

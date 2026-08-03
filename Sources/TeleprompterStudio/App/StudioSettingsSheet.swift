@@ -78,7 +78,7 @@ struct StudioSettingsSheet: View {
                                     get: { viewModel.recordingCoordinator.synthetic.blurRadius },
                                     set: { viewModel.recordingCoordinator.synthetic.setBlurRadius($0) }
                                 ),
-                                range: 0...40
+                                range: 0...60
                             )
                         }
                     }
