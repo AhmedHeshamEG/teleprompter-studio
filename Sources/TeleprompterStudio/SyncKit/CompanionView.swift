@@ -14,8 +14,8 @@ struct CompanionView: View {
         ZStack {
             Theme.background.ignoresSafeArea()
 
-            PrompterWebView(
-                document: coordinator.latestDocument ?? PrompterDocument(markdown: "_Waiting for Director…_"),
+            NativePrompterView(
+                document: coordinator.latestDocument ?? PrompterDocument(markdown: "Waiting for Director…"),
                 controller: controller,
                 isInteractivePreview: false
             )

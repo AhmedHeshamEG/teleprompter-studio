@@ -90,26 +90,17 @@ struct StudioView: View {
     }
 
     /// The scrolling script, as a floating card the user can drag anywhere on screen by its
-    /// handle. Only the handle is hit-testable — `PrompterWebView` itself stays
+    /// handle. Only the handle is hit-testable — `NativePrompterView` itself stays
     /// `allowsHitTesting(false)` so taps everywhere else (e.g. tap-to-focus on the camera
     /// underneath) keep working exactly as before.
     private func floatingPrompterOverlay(in screenSize: CGSize) -> some View {
         VStack(spacing: 0) {
             promptDragHandle(screenSize: screenSize)
 
-            ZStack {
-                // Guaranteed-visible plain-text rendering of the script, shown until the rich
-                // WKWebView renderer confirms it actually loaded. If the WebView never becomes
-                // ready for any reason, this stays up rather than leaving the screen blank.
-                if !viewModel.prompterController.isPageReady {
-                    nativePrompterFallback
-                }
-
-                PrompterWebView(document: viewModel.document, controller: viewModel.prompterController)
-                    .opacity(viewModel.prompterController.isPageReady ? 1 : 0)
-                    .allowsHitTesting(false)
-            }
-            .frame(height: screenSize.height * viewModel.overlayHeightFraction)
+            NativePrompterView(document: viewModel.document, controller: viewModel.prompterController)
+                .allowsHitTesting(false)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
+                .frame(height: screenSize.height * viewModel.overlayHeightFraction)
         }
         .frame(width: screenSize.width * 0.92)
         .opacity(viewModel.overlayOpacity)
@@ -122,21 +113,6 @@ struct StudioView: View {
         .onChange(of: screenSize) { _, newSize in
             promptPositionFraction = clampedFraction(promptPositionFraction, size: promptSize, screenSize: newSize)
         }
-    }
-
-    /// Plain SwiftUI text, no WebKit involved at all — deliberately dumb (no markdown styling,
-    /// no scrolling animation) so it has nothing else that could fail. Just needs to put the
-    /// user's actual script on screen.
-    private var nativePrompterFallback: some View {
-        ScrollView(showsIndicators: false) {
-            Text(viewModel.script.bodyMarkdown)
-                .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(Theme.spacingM)
-        }
-        .background(Color.black.opacity(0.6))
     }
 
     private func promptDragHandle(screenSize: CGSize) -> some View {
