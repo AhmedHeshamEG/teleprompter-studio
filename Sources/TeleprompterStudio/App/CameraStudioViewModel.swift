@@ -124,6 +124,31 @@ final class CameraStudioViewModel {
                 self?.recordingCoordinator.synthetic.setPreviewRotation(delta: Double(preview - capture))
             }
         }
+
+        // Studio *is* the Director screen, so say so — but only for someone actually using sync,
+        // so opening a script on a device that's set up as a Companion doesn't quietly reassign it.
+        if syncCoordinator.isHosting || syncCoordinator.hasConnectedPeers {
+            syncCoordinator.setRole(.director)
+        }
+
+        // `onConnectedPeersChanged` is edge-triggered, and the natural order of operations is to
+        // pair the two devices *first* (Settings → Connect a Device) and then go live. In that
+        // order the edge had already passed before Studio existed: no document was ever published,
+        // no playback was reported, and no camera frames were streamed — the Companion sat on
+        // "Waiting for Director…" for the whole take. Catch up on the state instead of waiting for
+        // an edge that already happened.
+        if syncCoordinator.hasConnectedPeers {
+            setCompanionStreaming(true)
+        }
+    }
+
+    /// Drops this view model's claim on the shared sync coordinator. Without it, a Studio screen
+    /// the user has already left stays wired up as the remote-command target, so a Companion's
+    /// record button would drive a stopped session.
+    private func detachSync() {
+        guard let syncCoordinator else { return }
+        syncCoordinator.onRemoteCommand = nil
+        syncCoordinator.onConnectedPeersChanged = nil
     }
 
     /// Companion mirroring is expensive (downscale + JPEG-encode every frame) and was running
@@ -192,6 +217,7 @@ final class CameraStudioViewModel {
     }
 
     func stop() {
+        detachSync()
         cancelArmedRecording()
         cinematicSettleTask?.cancel()
         cinematicSettleTask = nil

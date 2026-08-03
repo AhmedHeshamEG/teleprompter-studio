@@ -6,12 +6,12 @@ import SwiftUI
 struct PeerDiscoveryView: View {
     let coordinator: SyncCoordinator
     @Environment(\.dismiss) private var dismiss
-    @State private var isHosting = false
+    @State private var showingCompanionMode = false
 
     var body: some View {
         NavigationStack {
             List {
-                Section("This Device's Role") {
+                Section {
                     Picker("Role", selection: Binding(
                         get: { coordinator.role },
                         set: { coordinator.setRole($0) }
@@ -20,13 +20,34 @@ struct PeerDiscoveryView: View {
                         Text("Companion (mirror + remote)").tag(SyncRole.companion)
                     }
                     .pickerStyle(.inline)
+
+                    // Picking a role used to change nothing you could see. Each role now has the
+                    // one action that role actually needs, right here.
+                    if coordinator.role == .companion {
+                        Button {
+                            showingCompanionMode = true
+                        } label: {
+                            Label("Open Companion Screen", systemImage: "ipad.and.iphone")
+                        }
+                    }
+                } header: {
+                    Text("This Device's Role")
+                } footer: {
+                    Text(coordinator.role == .director
+                         ? "Director records and controls. Open a script and tap Go Live — the Companion mirrors this device's script, scroll position and camera."
+                         : "Companion mirrors the Director's script and camera, and can start/stop the take remotely.")
                 }
 
                 Section {
-                    Toggle("Discoverable on this Wi-Fi network", isOn: $isHosting)
-                        .onChange(of: isHosting) { _, newValue in
-                            newValue ? coordinator.startHosting() : coordinator.stopHosting()
-                        }
+                    Toggle("Discoverable on this Wi-Fi network", isOn: Binding(
+                        // Bound to the coordinator, not to local view state: a fresh @State toggle
+                        // reopened as "off" while discovery was actually running, and flipping it
+                        // tore down a working connection.
+                        get: { coordinator.isHosting },
+                        set: { $0 ? coordinator.startHosting() : coordinator.stopHosting() }
+                    ))
+                    LabeledContent("This Device", value: coordinator.localDeviceName)
+                    LabeledContent("Status", value: statusText)
                 } footer: {
                     Text("Uses Wi-Fi/Bluetooth on your local network only. No internet connection or account required.")
                 }
@@ -53,8 +74,14 @@ struct PeerDiscoveryView: View {
                 if !coordinator.connectedPeers.isEmpty {
                     Section("Connected") {
                         ForEach(coordinator.connectedPeers, id: \.self) { peer in
-                            Label(peer.displayName, systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Theme.success)
+                            HStack {
+                                Label(peer.displayName, systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(Theme.success)
+                                Spacer()
+                                if let peerRole = coordinator.peerRole {
+                                    Badge(text: peerRole == .director ? "Director" : "Companion", color: Theme.accent)
+                                }
+                            }
                         }
                     }
                 }
@@ -68,27 +95,22 @@ struct PeerDiscoveryView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .alert(
-                "Connect with \(coordinator.pendingInvite?.peer.displayName ?? "device")?",
-                isPresented: Binding(
-                    get: { coordinator.pendingInvite != nil },
-                    set: { if !$0 { coordinator.pendingInvite = nil } }
-                )
-            ) {
-                Button("Decline", role: .cancel) {
-                    coordinator.pendingInvite?.respond(false)
-                    coordinator.pendingInvite = nil
-                }
-                Button("Connect") {
-                    coordinator.pendingInvite?.respond(true)
-                    coordinator.pendingInvite = nil
-                }
-            }
         }
         .preferredColorScheme(.dark)
+        .peerInviteAlert(coordinator: coordinator)
+        .fullScreenCover(isPresented: $showingCompanionMode) {
+            CompanionView(coordinator: coordinator)
+        }
         .onAppear {
-            isHosting = true
             coordinator.startHosting()
+        }
+    }
+
+    private var statusText: String {
+        switch coordinator.connectionState {
+        case .connected: return "Connected"
+        case .connecting: return "Connecting…"
+        case .notConnected: return coordinator.isHosting ? "Looking for devices…" : "Off"
         }
     }
 }

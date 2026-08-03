@@ -20,6 +20,9 @@ struct RootView: View {
         .tint(Theme.accent)
         .environment(appState)
         .preferredColorScheme(.dark)
+        // Base presenter for incoming connection requests, so an invitation is answerable from
+        // anywhere in the app rather than only while the "Connect a Device" sheet happens to be up.
+        .peerInviteAlert(coordinator: appState.syncCoordinator)
         .onAppear {
             let settings = AppSettings.current(in: modelContext)
             if settings.lanServerEnabled {
