@@ -16,7 +16,11 @@ final class AdaptivePreviewStreamer: NSObject, AVCaptureVideoDataOutputSampleBuf
     private nonisolated(unsafe) var targetHeight: CGFloat = 540
     private nonisolated(unsafe) var targetFPS: Double = 18
     private nonisolated(unsafe) var jpegQuality: CGFloat = 0.5
-    private nonisolated(unsafe) var isEnabled = true
+    /// **Off until a Companion actually connects.** This used to default to `true`, so every
+    /// Studio session downscaled and JPEG-encoded ~18 frames a second, forever, for a peer that
+    /// in most sessions never existed — pure heat and CPU stolen from the UI. `CameraStudioViewModel`
+    /// flips it on and off with the peer connection.
+    private nonisolated(unsafe) var isEnabled = false
     private nonisolated(unsafe) var lastEmitTime: CFAbsoluteTime = 0
     private nonisolated(unsafe) var isBusy = false
     private nonisolated(unsafe) var consecutiveSlowFrames = 0

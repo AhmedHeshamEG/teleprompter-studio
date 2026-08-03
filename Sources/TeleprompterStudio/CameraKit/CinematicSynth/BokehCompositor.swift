@@ -68,6 +68,13 @@ final class BokehCompositor {
         return vignette.outputImage?.cropped(to: extent) ?? graded
     }
 
+    /// Renders a composited `CIImage` for on-screen display (the live cinematic preview). Kept
+    /// here rather than in the caller so the whole pipeline shares one Metal-backed `CIContext`
+    /// instead of each consumer allocating its own GPU resources.
+    func makeCGImage(_ image: CIImage) -> CGImage? {
+        context.createCGImage(image, from: image.extent)
+    }
+
     /// Renders a composited `CIImage` into a freshly allocated pixel buffer matching the given
     /// pool, ready to hand to `AVAssetWriterInputPixelBufferAdaptor`.
     func render(_ image: CIImage, into pool: CVPixelBufferPool) -> CVPixelBuffer? {

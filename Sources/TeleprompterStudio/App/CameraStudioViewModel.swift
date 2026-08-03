@@ -25,6 +25,8 @@ final class CameraStudioViewModel {
     let prompterController = PrompterController()
     private let previewStreamer = AdaptivePreviewStreamer()
     private let videoMultiplexer = VideoFrameMultiplexer()
+    /// Destination for live cinematic composite frames — see `CinematicPreviewSink`.
+    let cinematicPreview = CinematicPreviewSink()
 
     var runMode: StudioRunMode = .record
     var cinematicMode: CinematicMode = .off
@@ -48,12 +50,24 @@ final class CameraStudioViewModel {
     /// again during the countdown cancels the take instead of arming a second one.
     private var armedRecordTask: Task<Void, Never>?
 
+    /// Whether a Companion device is connected and being fed frames.
+    private var isCompanionStreaming = false
+
     /// True between tapping record and the countdown actually starting capture — the record button
     /// needs to read as "armed" immediately, not stay idle-looking for three seconds.
     var isArmed = false
 
-    var document: PrompterDocument {
-        PrompterDocument(markdown: script.bodyMarkdown, style: script.style ?? ScriptStyle())
+    /// Stored, not computed. As a computed property this rebuilt a `PrompterDocument` — and, more
+    /// importantly, *read the SwiftData `Script` model* — on every single access, including every
+    /// SwiftUI body evaluation of the Studio screen and five times a second from the sync timer.
+    /// Each of those reads re-registered an observation on the model, so ordinary SwiftData
+    /// bookkeeping could invalidate the entire camera screen. It's snapshotted at load instead.
+    private(set) var document: PrompterDocument
+
+    /// Re-snapshots the document from the script (call after editing style/text).
+    func refreshDocument() {
+        document = PrompterDocument(markdown: script.bodyMarkdown, style: script.style ?? ScriptStyle())
+        syncCoordinator?.publishDocument(document, title: script.title)
     }
 
     var resolvedCinematicKind: CinematicKind {
@@ -66,6 +80,7 @@ final class CameraStudioViewModel {
         if script.style == nil {
             script.style = ScriptStyle()
         }
+        document = PrompterDocument(markdown: script.bodyMarkdown, style: script.style ?? ScriptStyle())
     }
 
     func attach(syncCoordinator: SyncCoordinator, modelContext: ModelContext) {
@@ -73,6 +88,9 @@ final class CameraStudioViewModel {
         self.modelContext = modelContext
         syncCoordinator.onRemoteCommand = { [weak self] command in
             self?.handleRemoteCommand(command)
+        }
+        syncCoordinator.onConnectedPeersChanged = { [weak self] hasPeers in
+            self?.setCompanionStreaming(hasPeers)
         }
         videoMultiplexer.add(previewStreamer)
         videoMultiplexer.add(recordingCoordinator.synthetic)
@@ -84,6 +102,32 @@ final class CameraStudioViewModel {
         previewStreamer.onAvailabilityChanged = { [weak self] available in
             Task { @MainActor in self?.syncCoordinator?.publishPreviewAvailability(available) }
         }
+        recordingCoordinator.synthetic.onPreviewFrame = { [weak self] image in
+            Task { @MainActor in self?.cinematicPreview.submit(image) }
+        }
+    }
+
+    /// Companion mirroring is expensive (downscale + JPEG-encode every frame) and was running
+    /// permanently, whether or not a second device was ever connected. It's now bound to actually
+    /// having a peer — as is the whole raw-frame capture path it depends on.
+    private func setCompanionStreaming(_ enabled: Bool) {
+        isCompanionStreaming = enabled
+        previewStreamer.setEnabled(enabled)
+        syncFrameTapRequirement()
+        if enabled {
+            startPlaybackReporting()
+            syncCoordinator?.publishDocument(document, title: script.title)
+        } else {
+            playbackReportTimer?.invalidate()
+            playbackReportTimer = nil
+        }
+    }
+
+    /// The raw-frame outputs stay detached from the capture session unless something is actually
+    /// consuming frames — cinematic compositing or a connected Companion.
+    private func syncFrameTapRequirement() {
+        let needsFrames = isCompanionStreaming || cinematicMode == .cinematic
+        session.setDataOutputsEnabled(needsFrames)
     }
 
     func start() async {
@@ -100,7 +144,9 @@ final class CameraStudioViewModel {
             self?.errorMessage = message
         }
         prompterController.loadDocument(document)
-        startPlaybackReporting()
+        // Sync reporting only runs while a Companion is actually connected — see
+        // `setCompanionStreaming`. It used to tick five times a second unconditionally, rebuilding
+        // the whole document each tick for nobody.
 
         let status = await CameraAuthorization.requestAll()
         guard status.camera == .authorized, status.microphone == .authorized else {
@@ -125,6 +171,11 @@ final class CameraStudioViewModel {
         session.stop()
         levelMonitor.stop()
         playbackReportTimer?.invalidate()
+        playbackReportTimer = nil
+        previewStreamer.setEnabled(false)
+        recordingCoordinator.synthetic.setPreviewEnabled(false)
+        cinematicPreview.clear()
+        session.setDataOutputsEnabled(false)
         stopRecordingIfNeeded()
     }
 
@@ -165,6 +216,12 @@ final class CameraStudioViewModel {
         } else {
             realCinematic.disable(on: session)
         }
+        // Frames are only tapped while the effect is on, and the live composite preview is what
+        // makes the toggle mean something on screen instead of only inside the recorded file.
+        syncFrameTapRequirement()
+        let wantsSyntheticPreview = resolvedCinematicKind == .synthetic
+        recordingCoordinator.synthetic.setPreviewEnabled(wantsSyntheticPreview)
+        if !wantsSyntheticPreview { cinematicPreview.clear() }
     }
 
     /// Tapping record while a countdown is already running cancels it — otherwise the only way out
@@ -252,12 +309,14 @@ final class CameraStudioViewModel {
         }
     }
 
+    /// Streams playback position to a connected Companion. Only the *position* — the document
+    /// itself is published once when the peer connects (and again on `refreshDocument`), instead
+    /// of being re-encoded and re-sent five times a second forever.
     private func startPlaybackReporting() {
         playbackReportTimer?.invalidate()
-        playbackReportTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        playbackReportTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.syncCoordinator?.publishDocument(self.document, title: self.script.title)
                 self.syncCoordinator?.publishPlayback(
                     fraction: self.prompterController.progress,
                     isPlaying: self.prompterController.isPlaying,

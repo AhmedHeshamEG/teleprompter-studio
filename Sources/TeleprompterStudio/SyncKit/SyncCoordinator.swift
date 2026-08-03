@@ -44,6 +44,10 @@ final class SyncCoordinator: NSObject {
     /// Companion -> Director command callback, wired up by `CameraStudioViewModel`.
     var onRemoteCommand: ((SyncMessage.RemoteCommand) -> Void)?
     var onPeerConnected: ((MCPeerID) -> Void)?
+    /// Fired with `true` when the first peer connects and `false` when the last one drops. Studio
+    /// uses this to start/stop the expensive frame-streaming machinery instead of running it
+    /// unconditionally.
+    var onConnectedPeersChanged: ((Bool) -> Void)?
 
     private var previewSequence: UInt32 = 0
 
@@ -147,6 +151,7 @@ final class SyncCoordinator: NSObject {
 extension SyncCoordinator: MCSessionDelegate {
     nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         Task { @MainActor in
+            let hadPeers = !self.connectedPeers.isEmpty
             switch state {
             case .connected:
                 if !self.connectedPeers.contains(peerID) { self.connectedPeers.append(peerID) }
@@ -160,6 +165,8 @@ extension SyncCoordinator: MCSessionDelegate {
             @unknown default:
                 break
             }
+            let hasPeers = !self.connectedPeers.isEmpty
+            if hasPeers != hadPeers { self.onConnectedPeersChanged?(hasPeers) }
         }
     }
 
