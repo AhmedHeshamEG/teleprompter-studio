@@ -65,9 +65,10 @@ struct StudioView: View {
                     }
 
                     if viewModel.showGrid { GridOverlay().ignoresSafeArea() }
-                    if let point = viewModel.focusPoint {
-                        FocusReticle(point: point)
-                    }
+                    // In its own view: tapping to focus wrote `focusPoint`, and reading that here
+                    // rebuilt the entire Studio screen — camera preview, prompter card and all —
+                    // on every tap, for a reticle that occupies 72 points.
+                    StudioFocusReticle(viewModel: viewModel)
                 }
 
                 floatingPrompterOverlay(in: screen.size)
@@ -78,9 +79,7 @@ struct StudioView: View {
                         cameraErrorBanner(errorMessage)
                     }
                     Spacer()
-                    if viewModel.resolvedCinematicKind == .synthetic {
-                        Badge(text: "Simulated Cinematic", color: Theme.accent)
-                    }
+                    StudioCinematicBadge(viewModel: viewModel)
                     bottomChrome
                 }
             }
@@ -317,38 +316,94 @@ struct StudioView: View {
         .padding(.bottom, isCompactHeight ? Theme.spacingS : Theme.spacingM)
     }
 
+    /// Each button that reads a *changing* value reads it inside its own small view. Read here, a
+    /// single tap on record (or the torch, or Cinematic) invalidated this whole screen — including
+    /// the camera preview's representable update pass and the prompter card — and a view rebuilt
+    /// underneath a finger drops the press that was in flight. That is what "I have to tap it
+    /// several times" is made of.
     private var captureControls: some View {
         HStack(spacing: Theme.spacingL) {
             if viewModel.runMode == .record {
                 ChromeButton(systemImage: "arrow.triangle.2.circlepath.camera", size: Theme.minControlSizeCompact) {
                     viewModel.toggleFacing()
                 }
-                ChromeButton(
-                    systemImage: "sparkles",
-                    isActive: viewModel.cinematicMode == .cinematic,
-                    size: Theme.minControlSizeCompact
-                ) {
-                    viewModel.toggleCinematic()
-                }
+                StudioCinematicButton(viewModel: viewModel)
             }
 
-            RecordButton(
-                isRecording: viewModel.recordingCoordinator.isRecording,
-                isArmed: viewModel.isArmed
-            ) {
-                viewModel.toggleRecording()
-            }
+            StudioRecordButton(viewModel: viewModel)
 
             if viewModel.runMode == .record {
                 // The framing grid lives in Studio Settings now (and is on by default) — it's
                 // a set-once framing preference, not something worth a permanent slot in the
                 // thumb-reachable chrome next to the record button.
-                ChromeButton(systemImage: viewModel.session.torchOn ? "bolt.fill" : "bolt.slash", size: Theme.minControlSizeCompact) {
-                    viewModel.session.setTorch(on: !viewModel.session.torchOn)
-                }
+                StudioTorchButton(session: viewModel.session)
             }
         }
         .fixedSize()
+    }
+}
+
+private struct StudioFocusReticle: View {
+    let viewModel: CameraStudioViewModel
+
+    var body: some View {
+        if let point = viewModel.focusPoint {
+            FocusReticle(point: point)
+        }
+    }
+}
+
+/// "Cinematic" when Apple's hardware path is running, "Simulated Cinematic" when the effect is
+/// being produced in software — the distinction the user is entitled to see.
+private struct StudioCinematicBadge: View {
+    let viewModel: CameraStudioViewModel
+
+    var body: some View {
+        switch viewModel.resolvedCinematicKind {
+        case .real:
+            Badge(text: "Cinematic", color: Theme.accent, filled: true)
+        case .synthetic:
+            Badge(text: "Simulated Cinematic", color: Theme.accent)
+        case .none:
+            EmptyView()
+        }
+    }
+}
+
+private struct StudioCinematicButton: View {
+    let viewModel: CameraStudioViewModel
+
+    var body: some View {
+        ChromeButton(
+            systemImage: "sparkles",
+            isActive: viewModel.cinematicMode == .cinematic,
+            size: Theme.minControlSizeCompact
+        ) {
+            viewModel.toggleCinematic()
+        }
+    }
+}
+
+private struct StudioRecordButton: View {
+    let viewModel: CameraStudioViewModel
+
+    var body: some View {
+        RecordButton(
+            isRecording: viewModel.recordingCoordinator.isRecording,
+            isArmed: viewModel.isArmed
+        ) {
+            viewModel.toggleRecording()
+        }
+    }
+}
+
+private struct StudioTorchButton: View {
+    let session: AVCameraSession
+
+    var body: some View {
+        ChromeButton(systemImage: session.torchOn ? "bolt.fill" : "bolt.slash", size: Theme.minControlSizeCompact) {
+            session.setTorch(on: !session.torchOn)
+        }
     }
 }
 

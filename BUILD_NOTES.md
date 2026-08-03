@@ -68,32 +68,48 @@ from the project root. If anything fails, it's most likely one of the items belo
   (`katex/fonts/*.woff2` from `katex.min.css`) are preserved inside `Bundle.module`, so the CSS's
   relative font URLs resolve correctly without extra `Bundle` plumbing.
 
-## Real Cinematic capture (iOS 26) — confirmed unavailable in the CI SDK, cleanly disabled
+## Real Cinematic capture — reached at runtime, not through the SDK
 
-`CameraKit/CinematicReal/RealCinematicController.swift` mirrors the build brief's own API names
-for real hardware Cinematic capture:
+The hardware Cinematic Video members (`AVCaptureDeviceInput.isCinematicVideoCaptureEnabled`,
+`AVCaptureDevice.Format.isCinematicVideoCaptureSupported`, `simulatedAperture`) do **not** exist
+in the iOS SDK this project's CI toolchain builds against — that was confirmed by a real compiler
+error, not guessed. Writing them as ordinary Swift is therefore a hard build failure.
 
-- `AVCaptureDeviceInput.isCinematicVideoCaptureEnabled`
-- `AVCaptureDevice.activeFormat.isCinematicVideoCaptureSupported`
+They are, however, Objective-C properties that exist **in the OS on the device**. So
+`CameraKit/CinematicReal/CinematicVideoSupport.swift` reaches them by selector at runtime:
 
-The CI build (real Xcode, macOS runner) confirmed **neither member exists** in the SDK it built
-against — this isn't a guess anymore, it's a real `error: value of type '...' has no member
-'...'` from the compiler. Since the actual selector names can't be verified from this
-environment, `AVCameraSession.isCinematicSupported` now unconditionally returns `false` and
-`setCinematicEnabled` never performs the (commented-out) real call, per the spec's own "isolate
-it behind a protocol with a working default" guidance for exactly this situation. Practical
-effect: toggling "Cinematic" in Studio always resolves to `SyntheticCinematicPipeline` (the
-segmentation + Core Image blur fallback), which is fully implemented and works today — nothing
-in the app fails to compile or crashes at runtime because of this.
+- `AVCaptureDeviceInput.instancesRespond(to:)` decides whether this OS knows Cinematic at all.
+- `AVCaptureDevice.Format.responds(to:)` + KVC decides which formats can shoot it (Cinematic has
+  its own constraints — only some cameras, only some resolutions/frame rates).
+- KVC (`setValue:forKey:`), never `perform`, does the actual set: these are primitive `BOOL`/
+  `float` properties, which `perform` cannot pass or read correctly.
+- Every call is preceded by a `responds(to:)` check, so on an OS without the API nothing is
+  invoked and no `NSUnknownKeyException` is possible. Candidate name lists are tried in order,
+  since the exact spelling can't be verified from this environment.
 
-**To enable real Cinematic capture later**, once you have the actual iOS 26 SDK:
-1. In `CameraSession.swift`, replace the `false` in `isCinematicSupported` with the real
-   capability check, and uncomment the two lines in `setCinematicEnabled`.
-2. In `RealCinematicController.applyFocus(objectID:mode:output:)`, uncomment the
-   `setCinematicVideoTrackingFocus(detectedObjectID:focusMode:)` call and fix its signature to
-   match the real SDK (declaring type and `CinematicVideoFocusMode` shape are still unverified).
+This compiles on any SDK and gets the genuine hardware path on any device whose iOS has it.
+`AVCameraSession.isCinematicSupported` reports device capability (resolved once per configuration,
+not per view update); `isCinematicActive` reports whether the OS actually *accepted* it, which is
+what `CameraStudioViewModel.settleCinematicKind()` uses to decide between `.real` and falling back
+to `SyntheticCinematicPipeline`. The app never claims an effect it isn't running: the on-screen
+badge reads "Cinematic" for hardware and "Simulated Cinematic" for the fallback.
 
-Both are small, isolated, single-file changes — no architecture changes needed.
+Constraints deliberately honoured rather than fought:
+- Format choice is the system's. `CinematicVideoSupport.bestFormat` prefers the requested
+  resolution but takes the largest Cinematic-capable format otherwise, because insisting on 4K
+  would simply turn the feature off on devices that only offer 1080p.
+- Frame duration is left alone while Cinematic is on — overriding it is a common way to have the
+  flag silently refused.
+- `applyResolution` refuses to swap in a plain format while Cinematic is active, since that would
+  quietly disable it.
+- The raw `AVCaptureVideoDataOutput` tap stays detached for the hardware path (it's only needed by
+  the synthetic compositor and the Companion stream); a second full-rate output is another way to
+  get Cinematic declined.
+
+Still not wired: `setCinematicVideoTrackingFocus(detectedObjectID:focusMode:)` for tap-to-rack.
+It takes a struct/enum pair, which the runtime bridge above can't express (`perform` only passes
+objects, and `NSInvocation` isn't available in Swift). It needs a real SDK, or a small
+Objective-C shim file, to call.
 
 ## Design decisions worth knowing about
 
