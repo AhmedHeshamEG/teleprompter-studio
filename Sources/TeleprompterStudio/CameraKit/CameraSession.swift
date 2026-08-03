@@ -92,6 +92,44 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// Front camera mirrors by default (selfie-style), matching every stock camera app.
     var mirrorFrontCamera = true
 
+    /// The live preview layer, set once by `CameraPreviewView.makeUIView`. Rotation/mirroring are
+    /// applied to it directly from `sessionQueue` the moment they're computed (see
+    /// `applyRotationAngles`/`applyMirroring`) instead of only through the `previewRotationAngle`/
+    /// `isMirrored` `@Observable` properties read inside `CameraPreviewView.updateUIView`.
+    /// Property reads that only ever happen inside a `UIViewRepresentable`'s `updateUIView` (never
+    /// inside a SwiftUI `View.body`) are not reliably tracked by the Observation framework, so
+    /// `updateUIView` was not consistently re-invoked when the device rotated or facing changed —
+    /// the preview could get stuck showing the sensor's native (landscape) orientation inside a
+    /// portrait frame, or vice versa, and mirroring could likewise get stuck. This direct
+    /// reference is the fix: it guarantees every rotation/mirror update reaches the actual
+    /// `AVCaptureConnection` regardless of whether SwiftUI re-renders anything.
+    weak var previewLayer: AVCaptureVideoPreviewLayer? {
+        didSet {
+            sessionQueue.async { [weak self] in self?.syncPreviewLayerNow() }
+        }
+    }
+
+    /// Re-applies the last-known rotation angle and mirror state directly to `previewLayer`'s
+    /// connection. Called whenever `previewLayer` is (re)attached, so a layer that attaches after
+    /// the session already configured (a real race between SwiftUI creating the `UIView` and
+    /// `configure()` finishing) still ends up correctly oriented on its very first frame.
+    private func syncPreviewLayerNow() {
+        guard let previewLayer, let connection = previewLayer.connection else { return }
+        if connection.isVideoRotationAngleSupported(lastPreviewAngle) {
+            connection.videoRotationAngle = lastPreviewAngle
+        }
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = lastMirrored
+        }
+    }
+
+    /// Last-known values applied directly to `previewLayer`'s connection from `sessionQueue`;
+    /// separate from the `@Observable` `previewRotationAngle`/`isMirrored` (which exist for any
+    /// other UI that wants to read them) so `syncPreviewLayerNow()` never has to hop to main.
+    private var lastPreviewAngle: CGFloat = 90
+    private var lastMirrored = false
+
     /// Unique ID of the currently-selected audio input device (built-in mic, wired/Bluetooth
     /// headset mic, or an external USB/Lightning mic), or `nil` if none is attached. `nil` passed
     /// to `setAudioDevice` means "use the system default".
@@ -214,6 +252,8 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = shouldMirror
         }
+        lastMirrored = shouldMirror
+        syncPreviewLayerNow()
         DispatchQueue.main.async { self.isMirrored = shouldMirror }
     }
 
@@ -224,7 +264,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// device changes (e.g. front/back toggle) since the coordinator is bound to one device.
     private func setUpRotationCoordinator(for device: AVCaptureDevice) {
         rotationObservations.removeAll()
-        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
         rotationCoordinator = coordinator
 
         applyRotationAngles(
@@ -254,6 +294,8 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             DispatchQueue.main.async { self.captureRotationAngle = capture }
         }
         if let preview {
+            lastPreviewAngle = preview
+            syncPreviewLayerNow()
             DispatchQueue.main.async { self.previewRotationAngle = preview }
         }
     }
