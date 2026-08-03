@@ -11,6 +11,11 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewUIView()
         view.videoPreviewLayer.session = cameraSession.captureSession
         view.videoPreviewLayer.videoGravity = .resizeAspectFill
+        // `AVCameraSession` applies rotation/mirroring to this layer's connection directly and
+        // immediately whenever they change (see its `previewLayer` doc comment) — this is the
+        // single source of truth, not `updateUIView` below, which SwiftUI does not reliably
+        // re-invoke on every rotation/facing change.
+        cameraSession.previewLayer = view.videoPreviewLayer
 
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         view.addGestureRecognizer(tapGesture)
@@ -25,21 +30,8 @@ struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
         context.coordinator.onTap = onTap
         context.coordinator.onPinch = onPinch
-
-        // Keeps the preview upright as the device rotates; `previewRotationAngle` is driven
-        // live by `AVCameraSession`'s `AVCaptureDevice.RotationCoordinator` observers.
-        let angle = cameraSession.previewRotationAngle
-        if let connection = uiView.videoPreviewLayer.connection, connection.isVideoRotationAngleSupported(angle) {
-            connection.videoRotationAngle = angle
-        }
-
-        // Mirror the preview layer to match `videoDataOutput`/`movieFileOutput` exactly —
-        // relying on the preview layer's own automatic mirroring let it disagree with the
-        // capture connections, which is what produced the inconsistent/inverted preview.
-        if let connection = uiView.videoPreviewLayer.connection, connection.isVideoMirroringSupported {
-            connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = cameraSession.isMirrored
-        }
+        // Rotation/mirroring are applied directly by `AVCameraSession` (see its `previewLayer`
+        // property) the instant they change — nothing to do here.
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
