@@ -167,22 +167,28 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// the main thread competing with a capture pipeline that is doing pointless work.
     private var dataOutputsEnabled = false
 
-    /// Real hardware Cinematic capture support. See BUILD_NOTES.md "Cinematic API surface":
-    /// `AVCaptureDevice.Format.isCinematicVideoCaptureSupported` does not exist in the SDK this
-    /// project has actually been compiled against (confirmed by a real build, not guessed), so
-    /// this always resolves to `false` for now, and `RealCinematicController` — and therefore
-    /// `CameraStudioViewModel.resolvedCinematicKind` — cleanly falls back to the fully-working
-    /// `SyntheticCinematicPipeline` path. Once you have the real iOS 26 SDK, replace the `false`
-    /// below with the real capability check (probably still `device.activeFormat.<something>`,
-    /// just under a different, real member name) and this whole app gains real Cinematic
-    /// support with no other changes needed anywhere else.
-    var isCinematicSupported: Bool {
-        guard videoDeviceInput?.device != nil else { return false }
-        if #available(iOS 26.0, *) {
-            return false // see doc comment above
-        }
-        return false
-    }
+    /// Whether **Apple's own Cinematic Video capture** can run on this device: the OS knows the
+    /// API and the active camera has at least one Cinematic-capable format.
+    ///
+    /// Resolved once per configuration (see `configureSessionSync`) rather than computed on
+    /// demand, because it's read from SwiftUI bodies and enumerating every camera format is not
+    /// something to do during a view update. The check itself is a runtime one — see
+    /// `CinematicVideoSupport` for why the API can't simply be called in source.
+    private(set) var isCinematicSupported = false
+
+    /// Whether Cinematic capture is currently switched on *and the OS accepted it*. This is the
+    /// honest answer, not the requested one: if the format can't do it, this stays `false` and the
+    /// app falls back to the synthetic effect instead of pretending.
+    private(set) var isCinematicActive = false
+
+    /// Requested Cinematic state, applied on the session queue and re-applied whenever the format
+    /// changes underneath it (resolution changes, camera flips).
+    private var wantsCinematic = false
+
+    /// Last requested capture settings, so Cinematic format selection and a later
+    /// `applyResolution` agree about what the user asked for.
+    private var lastResolution: CaptureResolution = .hd1080
+    private var lastFPS: Double = 30
 
     func configure() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -242,10 +248,47 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         applyMirroring(facing: facing)
         setUpRotationCoordinator(for: videoDevice)
 
+        let cinematicSupported = CinematicVideoSupport.isSupported(by: videoDevice)
         DispatchQueue.main.async {
             self.facing = facing
             self.minZoom = videoDevice.minAvailableVideoZoomFactor
             self.maxZoom = min(videoDevice.maxAvailableVideoZoomFactor, 8)
+            self.isCinematicSupported = cinematicSupported
+        }
+
+        // Flipping the camera rebuilds the input, so a Cinematic session has to be re-established
+        // on the new device rather than silently dropping to a plain one.
+        if wantsCinematic, cinematicSupported {
+            applyCinematicSync(true, device: videoDevice, input: videoInput)
+        } else if wantsCinematic {
+            DispatchQueue.main.async { self.isCinematicActive = false }
+        }
+    }
+
+    /// Turns Apple's Cinematic Video capture on/off. Must run on `sessionQueue`; the caller owns
+    /// the `beginConfiguration`/`commitConfiguration` pair *or* this is called from inside
+    /// `configureSessionSync`, which already holds one.
+    ///
+    /// Order matters: Cinematic only engages on a format that supports it, so the format is
+    /// selected first and the flag set afterwards. Frame rate is left to whatever the Cinematic
+    /// format allows — those constraints are the system's, and overriding them is what makes the
+    /// flag get quietly refused.
+    private func applyCinematicSync(_ enabled: Bool, device: AVCaptureDevice, input: AVCaptureDeviceInput) {
+        if enabled {
+            if let format = CinematicVideoSupport.bestFormat(for: device, resolution: lastResolution, fps: 30),
+               device.activeFormat != format {
+                if (try? device.lockForConfiguration()) != nil {
+                    device.activeFormat = format
+                    device.unlockForConfiguration()
+                }
+            }
+        }
+        let accepted = CinematicVideoSupport.setEnabled(enabled, on: input)
+        let active = enabled && accepted
+        DispatchQueue.main.async { self.isCinematicActive = active }
+        if enabled && !accepted {
+            // Leave the session in a clean non-Cinematic state rather than half-configured.
+            CinematicVideoSupport.setEnabled(false, on: input)
         }
     }
 
@@ -417,7 +460,21 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// leaves the session untouched when no matching format exists.
     func applyResolution(_ resolution: CaptureResolution, fps: Double) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.videoDeviceInput?.device else { return }
+            guard let self, let input = self.videoDeviceInput else { return }
+            let device = input.device
+            self.lastResolution = resolution
+            self.lastFPS = fps
+            // While Cinematic is running, the *set of usable formats is the system's to decide*.
+            // Picking a plain format here would silently switch Cinematic off, which is precisely
+            // how a capture mode ends up looking like it "doesn't do anything".
+            if self.wantsCinematic, self.isCinematicActive {
+                self.captureSession.beginConfiguration()
+                self.applyCinematicSync(true, device: device, input: input)
+                self.captureSession.commitConfiguration()
+                self.applyMirroring(facing: self.facing)
+                self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
+                return
+            }
             guard let format = Self.bestFormat(for: device, resolution: resolution, fps: fps) else { return }
             self.captureSession.beginConfiguration()
             defer { self.captureSession.commitConfiguration() }
@@ -497,19 +554,40 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         torchOn = on
     }
 
-    /// See the doc comment on `isCinematicSupported` and BUILD_NOTES.md "Cinematic API
-    /// surface" — `isCinematicSupported` currently always returns `false`, so
-    /// `RealCinematicController.enable(on:)` never calls this with `enabled: true` in practice;
-    /// it's left real/callable (rather than deleted) so wiring in the actual iOS 26 SDK members
-    /// later is a two-line change, not a redesign.
+    /// Switches Apple's Cinematic Video capture on or off. Asynchronous by nature (it reconfigures
+    /// the running session), so success is reported through `isCinematicActive` rather than by
+    /// returning — callers watch that to decide whether the real path is running or the synthetic
+    /// fallback should take over.
     func setCinematicEnabled(_ enabled: Bool) throws {
-        guard videoDeviceInput?.device != nil else { throw CameraSessionError.noDeviceAvailable }
-        guard isCinematicSupported else {
-            throw CameraSessionError.configurationFailed("Cinematic capture not supported on active format")
+        guard videoDeviceInput != nil else { throw CameraSessionError.noDeviceAvailable }
+        guard !enabled || isCinematicSupported else {
+            throw CameraSessionError.configurationFailed("Cinematic capture not supported on this camera")
         }
-        // try device.lockForConfiguration()
-        // videoDeviceInput?.isCinematicVideoCaptureEnabled = enabled
-        // device.unlockForConfiguration()
+        wantsCinematic = enabled
+        sessionQueue.async { [weak self] in
+            guard let self, let input = self.videoDeviceInput else { return }
+            self.captureSession.beginConfiguration()
+            self.applyCinematicSync(enabled, device: input.device, input: input)
+            self.captureSession.commitConfiguration()
+            // A format swap rebuilds connections; rotation and mirroring have to be pushed back on.
+            self.applyMirroring(facing: self.facing)
+            self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
+            if !enabled {
+                // Back to whatever resolution the user actually picked.
+                self.applyResolution(self.lastResolution, fps: self.lastFPS)
+            }
+        }
+    }
+
+    /// The system's simulated aperture (f-number) for Cinematic capture — lower is shallower.
+    /// No-op when Cinematic isn't running.
+    func setCinematicAperture(_ fNumber: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self, let input = self.videoDeviceInput, self.isCinematicActive else { return }
+            self.captureSession.beginConfiguration()
+            CinematicVideoSupport.setSimulatedAperture(fNumber, on: input)
+            self.captureSession.commitConfiguration()
+        }
     }
 
     private static func device(for facing: CameraFacing) -> AVCaptureDevice? {

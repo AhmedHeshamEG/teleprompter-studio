@@ -70,9 +70,23 @@ final class CameraStudioViewModel {
         syncCoordinator?.publishDocument(document, title: script.title)
     }
 
-    var resolvedCinematicKind: CinematicKind {
-        guard cinematicMode == .cinematic else { return .none }
-        return RealCinematicController.isSupported(session: session) ? .real : .synthetic
+    /// Which cinematic path is actually running. Stored rather than computed: it settles a moment
+    /// after the toggle (the capture session has to accept Cinematic before we know whether the
+    /// hardware path is really running), and a computed answer would have flipped the whole
+    /// pipeline — frame taps, preview, recording route — on and off in that window.
+    private(set) var resolvedCinematicKind: CinematicKind = .none
+    private var cinematicSettleTask: Task<Void, Never>?
+
+    /// True while the real hardware path is in use, for the on-screen badge.
+    var isUsingAppleCinematic: Bool { resolvedCinematicKind == .real }
+
+    /// Simulated aperture (f-number) for Apple's Cinematic capture. f/2.8 is roughly what the
+    /// stock Camera app opens at.
+    private(set) var cinematicAperture: Double = 2.8
+
+    func setCinematicAperture(_ fNumber: Double) {
+        cinematicAperture = fNumber
+        session.setCinematicAperture(Float(fNumber))
     }
 
     init(script: Script) {
@@ -131,7 +145,10 @@ final class CameraStudioViewModel {
     /// The raw-frame outputs stay detached from the capture session unless something is actually
     /// consuming frames — cinematic compositing or a connected Companion.
     private func syncFrameTapRequirement() {
-        let needsFrames = isCompanionStreaming || cinematicMode == .cinematic
+        // Only the *synthetic* effect needs individual frames. Apple's Cinematic path renders in
+        // the capture pipeline itself, so tapping frames for it would be pure overhead — and a
+        // second full-rate output can be exactly what makes the OS decline Cinematic.
+        let needsFrames = isCompanionStreaming || resolvedCinematicKind == .synthetic
         session.setDataOutputsEnabled(needsFrames)
     }
 
@@ -165,7 +182,10 @@ final class CameraStudioViewModel {
             // session preset it already negotiated rather than losing its capture connections.
             session.start()
             session.applyResolution(resolution, fps: fps)
-            levelMonitor.start()
+            // `levelMonitor` is deliberately NOT started: nothing on screen displays the bubble
+            // level, and starting it meant CoreMotion waking the **main thread** 30 times a second
+            // to publish an observable value no view reads. Start it here again the day a level
+            // indicator is actually shown.
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -173,6 +193,8 @@ final class CameraStudioViewModel {
 
     func stop() {
         cancelArmedRecording()
+        cinematicSettleTask?.cancel()
+        cinematicSettleTask = nil
         session.stop()
         levelMonitor.stop()
         playbackReportTimer?.invalidate()
@@ -214,17 +236,53 @@ final class CameraStudioViewModel {
         session.setZoom(factor)
     }
 
+    /// Cinematic prefers Apple's hardware path — the real iPhone Cinematic mode, with the system's
+    /// own depth rendering and rack focus baked into the recording — and only falls back to the
+    /// synthetic segmentation + blur pipeline when the device or OS can't do it, or when the
+    /// session declines to switch it on.
     func toggleCinematic() {
         cinematicMode = cinematicMode == .off ? .cinematic : .off
-        if resolvedCinematicKind == .real {
-            try? realCinematic.enable(on: session)
-        } else {
+        cinematicSettleTask?.cancel()
+        cinematicSettleTask = nil
+
+        guard cinematicMode == .cinematic else {
             realCinematic.disable(on: session)
+            settleCinematicKind()
+            return
         }
-        // Frames are only tapped while the effect is on, and the live composite preview is what
-        // makes the toggle mean something on screen instead of only inside the recorded file.
+
+        guard session.isCinematicSupported, (try? realCinematic.enable(on: session)) != nil else {
+            settleCinematicKind() // → synthetic
+            return
+        }
+
+        // Assume the hardware path while the session reconfigures, so no synthetic work is
+        // started for an effect that's about to be handled in hardware, then confirm.
+        applyCinematicKind(.real)
+        cinematicSettleTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.settleCinematicKind()
+        }
+    }
+
+    private func settleCinematicKind() {
+        guard cinematicMode == .cinematic else {
+            applyCinematicKind(.none)
+            return
+        }
+        applyCinematicKind(session.isCinematicActive ? .real : .synthetic)
+    }
+
+    /// Routes the pipeline for a given cinematic kind: raw frame taps and the live composite
+    /// preview are only paid for by the synthetic path, never by the hardware one (which renders
+    /// its effect into the camera preview and the recording by itself).
+    private func applyCinematicKind(_ kind: CinematicKind) {
+        guard kind != resolvedCinematicKind else { return }
+        resolvedCinematicKind = kind
+        if kind == .real { session.setCinematicAperture(Float(cinematicAperture)) }
         syncFrameTapRequirement()
-        let wantsSyntheticPreview = resolvedCinematicKind == .synthetic
+        let wantsSyntheticPreview = kind == .synthetic
         recordingCoordinator.synthetic.setPreviewEnabled(wantsSyntheticPreview)
         if !wantsSyntheticPreview { cinematicPreview.clear() }
     }

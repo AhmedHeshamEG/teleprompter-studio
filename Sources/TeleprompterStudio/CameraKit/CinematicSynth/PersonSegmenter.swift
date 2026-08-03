@@ -7,17 +7,24 @@ import Vision
 final class PersonSegmenter {
     private let requestHandler = VNSequenceRequestHandler()
 
-    /// Returns a grayscale mask (`CIImage`, subject = white / 1.0, background = black / 0.0)
-    /// sized to match `pixelBuffer`, or `nil` if segmentation failed for this frame (compositor
-    /// should fall back to the previous mask or an all-sharp frame rather than stall capture).
-    func segmentationMask(for pixelBuffer: CVPixelBuffer) -> CIImage? {
+    /// One request, reused. Vision requests are configuration objects, not results — allocating a
+    /// fresh one per frame (as this did) meant setting up the same request tens of times a second
+    /// and handing Vision a new object each time, which defeats the caching a
+    /// `VNSequenceRequestHandler` exists to provide.
+    private let request: VNGeneratePersonSegmentationRequest = {
         let request = VNGeneratePersonSegmentationRequest()
         // `.balanced`, not `.accurate` — `.accurate` was measurably heavier per frame and was a
         // real contributor to on-device lag even though segmentation only runs on every Nth
         // frame; `.balanced` still gives a clean-enough silhouette for the blur mask.
         request.qualityLevel = .balanced
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        return request
+    }()
 
+    /// Returns a grayscale mask (`CIImage`, subject = white / 1.0, background = black / 0.0)
+    /// sized to match `pixelBuffer`, or `nil` if segmentation failed for this frame (compositor
+    /// should fall back to the previous mask or an all-sharp frame rather than stall capture).
+    func segmentationMask(for pixelBuffer: CVPixelBuffer) -> CIImage? {
         do {
             try requestHandler.perform([request], on: pixelBuffer)
         } catch {
