@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct StudioSettingsSheet: View {
@@ -16,6 +17,22 @@ struct StudioSettingsSheet: View {
                         Text("30 fps").tag(30.0)
                         Text("60 fps").tag(60.0)
                     }
+                }
+
+                Section {
+                    Picker("Microphone", selection: Binding(
+                        get: { viewModel.session.selectedAudioDeviceID },
+                        set: { newID in
+                            let device = AVCameraSession.availableAudioDevices().first { $0.uniqueID == newID }
+                            viewModel.setAudioDevice(device)
+                        }
+                    )) {
+                        ForEach(AVCameraSession.availableAudioDevices(), id: \.uniqueID) { device in
+                            Text(device.localizedName).tag(Optional(device.uniqueID))
+                        }
+                    }
+                } footer: {
+                    Text("Pick which connected microphone to record audio with — built-in, a wired/Bluetooth headset, or an external USB/Lightning mic.")
                 }
 
                 Section("Teleprompter Overlay") {

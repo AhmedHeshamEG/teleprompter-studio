@@ -14,37 +14,43 @@ struct StudioView: View {
     @State private var showingSettingsSheet = false
     @State private var showingPeerSheet = false
 
+    /// Floating control panel position, as a fraction (0...1) of the screen so it stays valid
+    /// across rotation/resizing instead of an absolute point that would land off-screen.
+    @State private var panelPositionFraction = CGPoint(x: 0.5, y: 0.86)
+    @State private var panelDragStart: CGPoint?
+    @State private var panelSize: CGSize = .zero
+
     init(script: Script) {
         _viewModel = State(initialValue: CameraStudioViewModel(script: script))
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { screen in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            if viewModel.runMode == .record {
-                CameraPreviewView(
-                    session: viewModel.session.captureSession,
-                    onTap: { viewModel.focus(at: $0) },
-                    onPinch: { viewModel.setZoom(viewModel.session.currentZoom * $0) }
-                )
-                .ignoresSafeArea()
+                if viewModel.runMode == .record {
+                    CameraPreviewView(
+                        cameraSession: viewModel.session,
+                        onTap: { viewModel.focus(at: $0) },
+                        onPinch: { viewModel.setZoom(viewModel.session.currentZoom * $0) }
+                    )
+                    .ignoresSafeArea()
 
-                if viewModel.showGrid { GridOverlay().ignoresSafeArea() }
-                if let point = viewModel.focusPoint {
-                    FocusReticle(point: point)
+                    if viewModel.showGrid { GridOverlay().ignoresSafeArea() }
+                    if let point = viewModel.focusPoint {
+                        FocusReticle(point: point)
+                    }
                 }
-            }
 
-            prompterOverlay
+                prompterOverlay
 
-            VStack {
-                topBar
-                Spacer()
-                if viewModel.resolvedCinematicKind == .synthetic {
-                    Badge(text: "Simulated Cinematic", color: Theme.accent)
+                VStack {
+                    topBar
+                    Spacer()
                 }
-                bottomChrome
+
+                floatingControlPanel(in: screen.size)
             }
         }
         .statusBarHidden()
@@ -114,8 +120,34 @@ struct StudioView: View {
         .padding(Theme.spacingM)
     }
 
-    private var bottomChrome: some View {
+    /// The prompter/record controls as a self-contained panel the user can drag anywhere on
+    /// screen with a finger, rather than a bar pinned to the bottom. Position is stored as a
+    /// screen-fraction (`panelPositionFraction`) so it stays valid across device rotation, and
+    /// dragging is clamped so the panel can never be dragged fully off-screen.
+    private func floatingControlPanel(in screenSize: CGSize) -> some View {
         VStack(spacing: Theme.spacingS) {
+            dragHandle
+                .contentShape(Rectangle().inset(by: -12)) // generous hit target for the handle
+                .gesture(
+                    DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                        .onChanged { value in
+                            let start = panelDragStart ?? panelPositionFraction
+                            if panelDragStart == nil { panelDragStart = start }
+                            panelPositionFraction = clampedFraction(
+                                CGPoint(
+                                    x: start.x + value.translation.width / max(screenSize.width, 1),
+                                    y: start.y + value.translation.height / max(screenSize.height, 1)
+                                ),
+                                screenSize: screenSize
+                            )
+                        }
+                        .onEnded { _ in panelDragStart = nil }
+                )
+
+            if viewModel.resolvedCinematicKind == .synthetic {
+                Badge(text: "Simulated Cinematic", color: Theme.accent)
+            }
+
             PrompterControlsView(controller: viewModel.prompterController)
 
             HStack(spacing: Theme.spacingL) {
@@ -149,8 +181,40 @@ struct StudioView: View {
                     }
                 }
             }
+            .padding(.bottom, Theme.spacingS)
         }
-        .padding(.bottom, Theme.spacingM)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge).stroke(Theme.border, lineWidth: 1))
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
+        .onGeometryChange(for: CGSize.self, of: \.size) { panelSize = $0 }
+        .position(
+            x: panelPositionFraction.x * screenSize.width,
+            y: panelPositionFraction.y * screenSize.height
+        )
+        .animation(Theme.smoothSpring, value: screenSize.width) // re-clamp smoothly on rotation
+        .onChange(of: screenSize) { _, newSize in
+            panelPositionFraction = clampedFraction(panelPositionFraction, screenSize: newSize)
+        }
+    }
+
+    /// Keeps the panel's center far enough from every edge that its own bounds (half-extent,
+    /// converted to fractions of the current screen size) never leave the visible screen.
+    private func clampedFraction(_ point: CGPoint, screenSize: CGSize) -> CGPoint {
+        guard screenSize.width > 0, screenSize.height > 0 else { return point }
+        let halfWidthFraction = (panelSize.width / 2 + Theme.spacingS) / screenSize.width
+        let halfHeightFraction = (panelSize.height / 2 + Theme.spacingS) / screenSize.height
+        return CGPoint(
+            x: min(max(point.x, halfWidthFraction), 1 - halfWidthFraction),
+            y: min(max(point.y, halfHeightFraction), 1 - halfHeightFraction)
+        )
+    }
+
+    private var dragHandle: some View {
+        Capsule()
+            .fill(Theme.textTertiary)
+            .frame(width: 36, height: 5)
+            .padding(.top, Theme.spacingS)
     }
 }
 

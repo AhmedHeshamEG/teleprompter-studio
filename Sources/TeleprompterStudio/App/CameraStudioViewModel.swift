@@ -114,6 +114,12 @@ final class CameraStudioViewModel {
         }
     }
 
+    func setAudioDevice(_ device: AVCaptureDevice?) {
+        Task {
+            try? await session.setAudioDevice(device)
+        }
+    }
+
     func focus(at point: CGPoint) {
         session.focus(at: point)
         focusPoint = point
