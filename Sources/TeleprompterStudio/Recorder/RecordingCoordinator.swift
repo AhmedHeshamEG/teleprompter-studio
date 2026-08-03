@@ -17,6 +17,10 @@ final class RecordingCoordinator {
     private(set) var elapsed: TimeInterval = 0
     private(set) var lastError: String?
 
+    /// Raised when capture stops by itself mid-take, so Studio can drop out of the recording UI
+    /// and tell the user why rather than sitting on a frozen timer.
+    var onRecordingFailed: ((String) -> Void)?
+
     private var movieRecorder: MovieFileRecorder?
     private let syntheticPipeline = SyntheticCinematicPipeline()
     private var usingSynthetic = false
@@ -32,10 +36,24 @@ final class RecordingCoordinator {
         saveToPhotos: Bool
     ) throws {
         guard !isRecording else { return }
+        guard session.captureSession.isRunning else { throw RecorderError.sessionNotRunning }
 
         switch cinematicKind {
         case .none, .real:
             let recorder = MovieFileRecorder(output: session.movieFileOutput)
+            recorder.onUnexpectedStop = { [weak self] error in
+                Task { @MainActor in
+                    guard let self, self.isRecording else { return }
+                    self.stopElapsedTimer()
+                    self.isRecording = false
+                    self.movieRecorder = nil
+                    self.elapsed = 0
+                    self.recordingStartDate = nil
+                    let message = error?.localizedDescription ?? "Recording stopped unexpectedly."
+                    self.lastError = message
+                    self.onRecordingFailed?(message)
+                }
+            }
             _ = try recorder.start()
             movieRecorder = recorder
             usingSynthetic = false
@@ -89,6 +107,7 @@ final class RecordingCoordinator {
             try? modelContext.save()
         } catch {
             lastError = error.localizedDescription
+            onRecordingFailed?(error.localizedDescription)
         }
 
         movieRecorder = nil
