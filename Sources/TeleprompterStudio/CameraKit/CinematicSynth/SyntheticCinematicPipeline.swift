@@ -22,7 +22,7 @@ final class SyntheticCinematicPipeline: NSObject {
     /// Adjustable "aperture" blur amount. Written from the main-actor UI slider, read from
     /// `processingQueue` on every frame; plain `Double` writes/reads are word-atomic on all
     /// Apple platforms and the value only ever needs to be "recent", not perfectly synchronized.
-    nonisolated(unsafe) private(set) var blurRadius: Double = 18
+    nonisolated(unsafe) private(set) var blurRadius: Double = 32
 
     func setBlurRadius(_ value: Double) {
         blurRadius = value

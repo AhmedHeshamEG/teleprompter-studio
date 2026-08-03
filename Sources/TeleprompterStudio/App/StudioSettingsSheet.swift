@@ -35,16 +35,31 @@ struct StudioSettingsSheet: View {
                     Text("Pick which connected microphone to record audio with — built-in, a wired/Bluetooth headset, or an external USB/Lightning mic.")
                 }
 
-                Section("Teleprompter Overlay") {
+                Section {
                     LabeledSlider(label: "Opacity", systemImage: "circle.lefthalf.filled", value: $viewModel.overlayOpacity, range: 0.3...1.0) {
                         "\(Int($0 * 100))%"
                     }
                     LabeledSlider(label: "Height", systemImage: "arrow.up.and.down", value: $viewModel.overlayHeightFraction, range: 0.25...0.9) {
                         "\(Int($0 * 100))%"
                     }
-                    LabeledSlider(label: "Vertical Position", systemImage: "arrow.up.arrow.down", value: $viewModel.overlayVerticalOffset, range: -0.35...0.35) {
-                        $0 < 0 ? "Near Lens" : ($0 > 0 ? "Lower" : "Center")
+                } header: {
+                    Text("Teleprompter Overlay")
+                } footer: {
+                    Text("Drag the handle above the script text in Studio to reposition it anywhere on screen.")
+                }
+
+                Section {
+                    Picker("Rotation", selection: Binding(
+                        get: { OrientationController.shared.lock },
+                        set: { OrientationController.shared.lock = $0 }
+                    )) {
+                        ForEach(OrientationLock.allCases) { Text($0.rawValue).tag($0) }
                     }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Rotation")
+                } footer: {
+                    Text("Auto follows however you're holding the phone. Portrait/Landscape locks the app to that orientation.")
                 }
 
                 if viewModel.cinematicMode == .cinematic {
