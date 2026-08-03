@@ -45,6 +45,16 @@ struct StudioView: View {
                     )
                     .ignoresSafeArea()
 
+                    // Live cinematic composite, drawn over the plain preview while the effect is
+                    // on. Before this, Cinematic changed nothing you could see until you played
+                    // back the file. Never takes touches, so focus/zoom still work underneath.
+                    if viewModel.resolvedCinematicKind == .synthetic {
+                        CinematicPreviewView(sink: viewModel.cinematicPreview)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+
                     if viewModel.showGrid { GridOverlay().ignoresSafeArea() }
                     if let point = viewModel.focusPoint {
                         FocusReticle(point: point)
@@ -63,10 +73,6 @@ struct StudioView: View {
                         Badge(text: "Simulated Cinematic", color: Theme.accent)
                     }
                     bottomChrome
-                }
-
-                if showingPrompterSliders {
-                    prompterSlidersLayer
                 }
             }
         }
@@ -96,6 +102,9 @@ struct StudioView: View {
         }
         .sheet(isPresented: $showingPeerSheet) {
             PeerDiscoveryView(coordinator: appState.syncCoordinator)
+        }
+        .sheet(isPresented: $showingPrompterSliders) {
+            PrompterSlidersPanel(controller: viewModel.prompterController)
         }
         .preferredColorScheme(.dark)
     }
@@ -218,28 +227,6 @@ struct StudioView: View {
             .onTapGesture { viewModel.errorMessage = nil }
     }
 
-    /// Topmost layer: a full-screen scrim that absorbs every touch, with the speed/font panel
-    /// centered on it. Nothing beneath — record button included — can be hit while it's open, so
-    /// a tap aimed at a slider can't land on record. Tapping the scrim dismisses.
-    private var prompterSlidersLayer: some View {
-        ZStack {
-            Color.black.opacity(0.45)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { closePrompterSliders() }
-
-            PrompterSlidersPanel(controller: viewModel.prompterController) {
-                closePrompterSliders()
-            }
-            .padding(.horizontal, Theme.spacingL)
-        }
-        .transition(.opacity)
-    }
-
-    private func closePrompterSliders() {
-        withAnimation(Theme.quickSpring) { showingPrompterSliders = false }
-    }
-
     private var topBar: some View {
         HStack {
             ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
@@ -252,7 +239,7 @@ struct StudioView: View {
 
             Spacer()
 
-            RecordingIndicator(isRecording: viewModel.recordingCoordinator.isRecording, elapsed: viewModel.recordingCoordinator.elapsed)
+            StudioRecordingIndicator(coordinator: viewModel.recordingCoordinator)
 
             ChromeButton(systemImage: "person.2.fill", size: Theme.minControlSizeCompact) {
                 showingPeerSheet = true
@@ -305,6 +292,22 @@ struct StudioView: View {
             }
         }
         .padding(.bottom, Theme.spacingM)
+    }
+}
+
+/// Wraps `RecordingIndicator` so the ticking `elapsed` value is read **inside this small view's
+/// body**, not inside `StudioView.body`.
+///
+/// Read at the `StudioView` level, every timer tick invalidated the entire Studio screen: camera
+/// chrome, the floating prompter card, the prompter's `UIViewRepresentable` update pass, the lot —
+/// several times a second, for a label that changes once a second. That constant re-render is a
+/// large part of why the app felt heavy and why taps on nearby buttons got dropped (SwiftUI
+/// rebuilding a view mid-gesture loses the in-flight press).
+private struct StudioRecordingIndicator: View {
+    let coordinator: RecordingCoordinator
+
+    var body: some View {
+        RecordingIndicator(isRecording: coordinator.isRecording, elapsed: coordinator.elapsed)
     }
 }
 

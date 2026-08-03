@@ -117,7 +117,9 @@ final class RecordingCoordinator {
 
     private func startElapsedTimer() {
         elapsedTimer?.invalidate()
-        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        // 0.5s, not 0.2s: the timecode readout has one-second resolution, so a faster tick only
+        // bought extra SwiftUI invalidations of everything observing `elapsed`.
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.recordingStartDate else { return }
                 self.elapsed = Date().timeIntervalSince(start)
