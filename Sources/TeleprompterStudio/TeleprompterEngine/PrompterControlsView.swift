@@ -3,16 +3,16 @@ import SwiftUI
 /// Reusable prompter transport chrome: progress bar, play/pause, restart, 3-2-1 countdown, and
 /// the toggle for the speed/font-size panel.
 ///
-/// The panel itself is deliberately **not** rendered here — see `PrompterSlidersPanel`. It's
-/// presented by the screen that owns this view, on its own layer above every other control, so it
-/// can never sit ambiguously on top of (or underneath) the record button.
+/// The panel itself is deliberately **not** rendered here — see `PrompterSlidersPanel`. The screen
+/// that owns this view presents it as a system sheet, so it can never sit ambiguously on top of
+/// (or underneath) the record button.
 struct PrompterControlsView: View {
     @Bindable var controller: PrompterController
     @Binding var showingSliders: Bool
 
     var body: some View {
         VStack(spacing: Theme.spacingM) {
-            progressBar
+            PrompterProgressBar(controller: controller)
             transportRow
         }
         .padding(Theme.spacingM)
@@ -32,13 +32,22 @@ struct PrompterControlsView: View {
                 controller.startCountdown(seconds: 3)
             }
 
+            // No `withAnimation` — the sheet brings its own presentation animation.
             ChromeButton(systemImage: "slider.horizontal.3", isActive: showingSliders, size: Theme.minControlSizeCompact) {
-                withAnimation(Theme.quickSpring) { showingSliders.toggle() }
+                showingSliders.toggle()
             }
         }
     }
+}
 
-    private var progressBar: some View {
+/// The progress bar reads `controller.progress`, which updates ~10× a second during playback. It's
+/// its own view so those updates redraw a 6pt capsule and nothing else — kept inside
+/// `PrompterControlsView`, every progress tick also rebuilt the transport buttons next to it, and a
+/// button being rebuilt underneath a finger is a button that drops the tap.
+private struct PrompterProgressBar: View {
+    let controller: PrompterController
+
+    var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.15))
@@ -57,24 +66,23 @@ struct PrompterControlsView: View {
     }
 }
 
-/// Speed / font-size / guide panel. Presented as its own modal layer (scrim + centered card)
-/// rather than as chrome wedged in among the transport buttons: as an inline element it sat
-/// directly over the record button's neighbourhood, so a tap aimed at a slider could land on
-/// record instead. On its own layer above a tap-absorbing scrim, nothing underneath is reachable
-/// while it's open, and tapping away closes it.
+/// Speed / font-size / guide panel, shown in a short system sheet (`.presentationDetents`) that
+/// only covers the bottom of the screen.
+///
+/// It's a sheet rather than a hand-rolled overlay because that's the platform answer to exactly
+/// this problem: it can't overlap the record button (the sheet owns its own space and blocks the
+/// content behind it), it comes with the standard grabber, swipe-to-dismiss, blurred material and
+/// spring animation, and it needs no custom scrim, no tap-swallowing tricks, and no guessing about
+/// which control a touch belonged to. The panel content itself is the same set of controls as
+/// before — nothing about the look of the sliders has changed, only where they live.
 struct PrompterSlidersPanel: View {
     @Bindable var controller: PrompterController
-    var onClose: () -> Void
 
     var body: some View {
-        VStack(spacing: Theme.spacingM) {
-            HStack {
-                Text("Prompter")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Spacer()
-                ChromeButton(systemImage: "xmark", size: 32, action: onClose)
-            }
+        VStack(alignment: .leading, spacing: Theme.spacingL) {
+            Text("Prompter")
+                .font(.headline)
+                .foregroundStyle(Theme.textPrimary)
 
             LabeledSlider(
                 label: "Speed",
@@ -90,24 +98,32 @@ struct PrompterSlidersPanel: View {
                 range: 18...120
             ) { "\(Int($0)) pt" }
 
-            Picker("Guide", selection: Binding(
-                get: { controller.guideMode },
-                set: { controller.setGuide($0) }
-            )) {
-                Text("Line").tag(PrompterGuideMode.line)
-                Text("Band").tag(PrompterGuideMode.band)
-                Text("Off").tag(PrompterGuideMode.none)
+            VStack(alignment: .leading, spacing: Theme.spacingXS) {
+                Label("Reading Guide", systemImage: "text.aligncenter")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Theme.textSecondary)
+                Picker("Reading Guide", selection: Binding(
+                    get: { controller.guideMode },
+                    set: { controller.setGuide($0) }
+                )) {
+                    Text("Line").tag(PrompterGuideMode.line)
+                    Text("Band").tag(PrompterGuideMode.band)
+                    Text("Off").tag(PrompterGuideMode.none)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
+
+            Spacer(minLength: 0)
         }
-        .padding(Theme.spacingM)
-        .frame(maxWidth: 460)
-        .background(Theme.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge).stroke(Theme.border, lineWidth: 1))
-        .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
-        // Swallows every touch that lands on the card so nothing behind it reacts, including
-        // drags that start on a slider and wander off it.
-        .contentShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge))
-        .onTapGesture {}
+        .padding(.horizontal, Theme.spacingL)
+        .padding(.top, Theme.spacingL)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .presentationDetents([.height(300)])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(.thinMaterial)
+        .presentationCornerRadius(Theme.cornerRadiusLarge)
+        .presentationBackgroundInteraction(.disabled)
+        .preferredColorScheme(.dark)
     }
 }

@@ -5,7 +5,22 @@ import Foundation
 /// `<mark>`, `**bold**`, etc. in their saved body — this guarantees the prompter never shows that
 /// raw syntax on screen, regardless of what's stored.
 enum PlainTextRenderer {
+    /// Last input/output pair. Stripping a script runs five `NSRegularExpression` passes over the
+    /// whole body, and `NativePrompterView` asks for it on *every* SwiftUI body evaluation — which
+    ///, on the Studio screen, happens whenever anything at all republishes (recording timer,
+    /// playback progress, a drag). One slot is enough: the prompter only ever renders one script
+    /// at a time, so this turns a per-render regex sweep into a string comparison.
+    @MainActor private static var cache: (markdown: String, plain: String)?
+
+    @MainActor
     static func plainText(from markdown: String) -> String {
+        if let cache, cache.markdown == markdown { return cache.plain }
+        let result = compute(from: markdown)
+        cache = (markdown, result)
+        return result
+    }
+
+    static func compute(from markdown: String) -> String {
         var text = markdown
         text = replacing(in: text, pattern: "<[^>]+>", with: "")
         text = replacing(in: text, pattern: "\\*\\*([^*]+)\\*\\*", with: "$1")

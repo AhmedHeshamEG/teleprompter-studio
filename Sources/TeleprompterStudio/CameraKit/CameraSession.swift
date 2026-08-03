@@ -150,6 +150,16 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     let audioDataOutput = AVCaptureAudioDataOutput()
     private let dataOutputQueue = DispatchQueue(label: "studio.camera.dataOutput")
 
+    /// Whether the raw-frame taps (`videoDataOutput`/`audioDataOutput`) are attached to the
+    /// session. **Off by default.** These outputs are only needed by the two features that consume
+    /// individual frames — the synthetic cinematic pipeline and the Companion preview stream — but
+    /// they used to be attached unconditionally, so every ordinary session paid for a second
+    /// full-rate video path (and a per-frame delegate hop) that nothing was reading. On a 1080p60
+    /// session that is a large, permanent tax on memory bandwidth and thermals, which is exactly
+    /// what "the whole app feels laggy / buttons need several taps" looks like from the outside:
+    /// the main thread competing with a capture pipeline that is doing pointless work.
+    private var dataOutputsEnabled = false
+
     /// Real hardware Cinematic capture support. See BUILD_NOTES.md "Cinematic API surface":
     /// `AVCaptureDevice.Format.isCinematicVideoCaptureSupported` does not exist in the SDK this
     /// project has actually been compiled against (confirmed by a real build, not guessed), so
@@ -218,6 +228,48 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             captureSession.addOutput(movieFileOutput)
         }
 
+        if dataOutputsEnabled {
+            attachDataOutputsSync()
+        }
+
+        applyMirroring(facing: facing)
+        setUpRotationCoordinator(for: videoDevice)
+
+        DispatchQueue.main.async {
+            self.facing = facing
+            self.minZoom = videoDevice.minAvailableVideoZoomFactor
+            self.maxZoom = min(videoDevice.maxAvailableVideoZoomFactor, 8)
+        }
+    }
+
+    /// Attaches/detaches the raw-frame outputs on the fly. Called by `CameraStudioViewModel` when
+    /// something actually starts needing frames (cinematic mode turned on, a Companion device
+    /// connected) and again when it stops. Idempotent and safe before `configure()` — in that case
+    /// it just records the preference, and `configureSessionSync` honours it.
+    func setDataOutputsEnabled(_ enabled: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.dataOutputsEnabled != enabled else { return }
+            self.dataOutputsEnabled = enabled
+            guard self.videoDeviceInput != nil else { return } // not configured yet
+            self.captureSession.beginConfiguration()
+            if enabled {
+                self.attachDataOutputsSync()
+            } else {
+                self.captureSession.removeOutput(self.videoDataOutput)
+                self.captureSession.removeOutput(self.audioDataOutput)
+            }
+            self.captureSession.commitConfiguration()
+            if enabled {
+                // Freshly added outputs come with fresh connections, so the current rotation and
+                // mirroring have to be pushed onto them or recorded frames come out sideways.
+                self.applyMirroring(facing: self.facing)
+                self.applyRotationAngles(preview: nil, capture: self.lastCaptureAngle)
+            }
+        }
+    }
+
+    /// Must be called on `sessionQueue`, inside a configuration transaction.
+    private func attachDataOutputsSync() {
         videoDataOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoDataOutput.alwaysDiscardsLateVideoFrames = true
         videoDataOutput.setSampleBufferDelegate(videoDataDelegate, queue: dataOutputQueue)
@@ -228,15 +280,6 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         audioDataOutput.setSampleBufferDelegate(audioDataDelegate, queue: dataOutputQueue)
         if captureSession.canAddOutput(audioDataOutput) {
             captureSession.addOutput(audioDataOutput)
-        }
-
-        applyMirroring(facing: facing)
-        setUpRotationCoordinator(for: videoDevice)
-
-        DispatchQueue.main.async {
-            self.facing = facing
-            self.minZoom = videoDevice.minAvailableVideoZoomFactor
-            self.maxZoom = min(videoDevice.maxAvailableVideoZoomFactor, 8)
         }
     }
 

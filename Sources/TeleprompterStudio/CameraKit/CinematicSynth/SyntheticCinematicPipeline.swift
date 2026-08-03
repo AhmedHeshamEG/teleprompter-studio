@@ -40,6 +40,27 @@ final class SyntheticCinematicPipeline: NSObject {
     private var lastMask: CIImage?
     private var outputURL: URL?
 
+    /// Live WYSIWYG preview. Turning Cinematic on used to change nothing you could see — the
+    /// blur only existed inside the recorded file, so the toggle read as broken and there was no
+    /// way to judge the effect before shooting. With this on, the same composite that gets written
+    /// to disk is also rendered to screen. Off by default and only turned on with the Cinematic
+    /// toggle, so a normal session pays nothing for it.
+    nonisolated(unsafe) private var isPreviewEnabled = false
+    /// Called on the main thread with a display-ready composited frame.
+    var onPreviewFrame: ((CGImage) -> Void)?
+    private var lastPreviewEmit: CFAbsoluteTime = 0
+    /// Preview is deliberately coarser than the recording: screen-sized, and well under the
+    /// capture rate. It exists to show what the effect looks like, not to be the recording.
+    private let previewTargetFPS: Double = 24
+    private let previewTargetHeight: CGFloat = 720
+
+    func setPreviewEnabled(_ enabled: Bool) {
+        processingQueue.async { [weak self] in
+            self?.isPreviewEnabled = enabled
+            self?.lastPreviewEmit = 0
+        }
+    }
+
     private var frameCount = 0
     /// Run segmentation on every Nth frame and reuse the mask in between — full per-frame
     /// segmentation is unnecessary for a blur effect and would compete with encoding for GPU time.
@@ -145,6 +166,24 @@ extension SyntheticCinematicPipeline: AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func processVideoFrame(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
+        let isRecording = assetWriter != nil && videoInput != nil && pixelBufferAdaptor != nil
+        guard isRecording || isPreviewEnabled else { return }
+
+        frameCount += 1
+        if frameCount % segmentationInterval == 0 || lastMask == nil {
+            lastMask = segmenter.segmentationMask(for: pixelBuffer)
+        }
+        let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
+
+        if isRecording {
+            appendRecordingFrame(sourceImage, pixelBuffer: pixelBuffer, presentationTime: presentationTime)
+        }
+        if isPreviewEnabled {
+            emitPreviewFrame(from: sourceImage)
+        }
+    }
+
+    private func appendRecordingFrame(_ sourceImage: CIImage, pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
         guard let writer = assetWriter, let videoInput, let adaptor = pixelBufferAdaptor else { return }
 
         if sessionStartTime == nil {
@@ -153,17 +192,32 @@ extension SyntheticCinematicPipeline: AVCaptureVideoDataOutputSampleBufferDelega
         }
         guard videoInput.isReadyForMoreMediaData else { return }
 
-        frameCount += 1
-        if frameCount % segmentationInterval == 0 || lastMask == nil {
-            lastMask = segmenter.segmentationMask(for: pixelBuffer)
-        }
-
-        let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
         let composited = compositor.composite(source: sourceImage, mask: lastMask, blurRadius: blurRadius)
-
         guard let pool = adaptor.pixelBufferPool,
               let outputBuffer = compositor.render(composited, into: pool) else { return }
         adaptor.append(outputBuffer, withPresentationTime: presentationTime)
+    }
+
+    /// Composites a downscaled copy for the on-screen preview. Downscaling first is what keeps
+    /// this affordable: the expensive filters (gaussian blur, mask feather, grade) all cost in
+    /// proportion to pixel count, and the result only ever has to fill a phone screen. The blur
+    /// radius is scaled to match so the preview shows the same *look*, not a different one.
+    private func emitPreviewFrame(from sourceImage: CIImage) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastPreviewEmit >= 1.0 / previewTargetFPS else { return }
+        lastPreviewEmit = now
+
+        let extent = sourceImage.extent
+        guard extent.height > 1 else { return }
+        let scale = min(1, previewTargetHeight / extent.height)
+        let scaled = scale < 1
+            ? sourceImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            : sourceImage
+
+        let composited = compositor.composite(source: scaled, mask: lastMask, blurRadius: blurRadius * Double(scale))
+        guard let image = compositor.makeCGImage(composited) else { return }
+        let callback = onPreviewFrame
+        DispatchQueue.main.async { callback?(image) }
     }
 }
 

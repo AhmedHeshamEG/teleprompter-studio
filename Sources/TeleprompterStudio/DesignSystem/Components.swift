@@ -16,9 +16,14 @@ struct ChromeButton: View {
                 .frame(width: size, height: size)
                 .background(backgroundColor, in: Circle())
                 .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                // The touch target is at least 48pt and the hit shape is declared on the *label*,
+                // inside the Button. Declaring it outside (as this did) doesn't widen what the
+                // button actually accepts, so the compact 44pt variants had genuinely small,
+                // easy-to-miss targets — which reads as "I have to tap it several times".
+                .frame(width: max(size, 48), height: max(size, 48))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .contentShape(Circle())
         .animation(Theme.quickSpring, value: isActive)
     }
 
