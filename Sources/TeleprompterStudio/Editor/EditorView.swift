@@ -10,8 +10,8 @@ struct EditorView: View {
     @State private var showingStylePanel = false
     @State private var showingStudio = false
     @State private var saveWorkItem: DispatchWorkItem?
-    /// Must stay stable across body re-evaluations (every keystroke) — a fresh
-    /// `PrompterController` on each render would never get attached to the live WKWebView.
+    /// Must stay stable across body re-evaluations (every keystroke) so scroll/play state
+    /// doesn't reset on every edit.
     @State private var previewController = PrompterController()
 
     private var style: ScriptStyle {
@@ -81,7 +81,7 @@ struct EditorView: View {
     }
 
     private var previewPane: some View {
-        PrompterWebView(
+        NativePrompterView(
             document: PrompterDocument(markdown: script.bodyMarkdown, style: style),
             controller: previewController,
             isInteractivePreview: true

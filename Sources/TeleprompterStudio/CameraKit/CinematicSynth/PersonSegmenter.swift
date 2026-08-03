@@ -12,10 +12,10 @@ final class PersonSegmenter {
     /// should fall back to the previous mask or an all-sharp frame rather than stall capture).
     func segmentationMask(for pixelBuffer: CVPixelBuffer) -> CIImage? {
         let request = VNGeneratePersonSegmentationRequest()
-        // `.accurate` gives a much cleaner silhouette (fewer blocky/jagged edges around hair,
-        // shoulders, glasses) than `.balanced`; affordable here because `SyntheticCinematicPipeline`
-        // already only runs segmentation on every Nth frame and reuses the mask in between.
-        request.qualityLevel = .accurate
+        // `.balanced`, not `.accurate` — `.accurate` was measurably heavier per frame and was a
+        // real contributor to on-device lag even though segmentation only runs on every Nth
+        // frame; `.balanced` still gives a clean-enough silhouette for the blur mask.
+        request.qualityLevel = .balanced
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
 
         do {
