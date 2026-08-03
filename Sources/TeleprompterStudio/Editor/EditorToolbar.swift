@@ -3,9 +3,6 @@ import SwiftUI
 struct EditorToolbar: View {
     let apply: (@escaping (String, NSRange) -> MarkdownFormatter.Result) -> Void
 
-    @State private var textColor: Color = .white
-    @State private var highlightColor: Color = .yellow
-
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.spacingS) {
@@ -18,30 +15,6 @@ struct EditorToolbar: View {
                 toolButton("underline") { text, range in
                     MarkdownFormatter.toggleWrap(text: text, range: range, prefix: "<u>", suffix: "</u>")
                 }
-
-                Divider().frame(height: 24)
-
-                ColorPicker("", selection: $textColor, supportsOpacity: false)
-                    .labelsHidden()
-                    .frame(width: 32)
-                    .onChange(of: textColor) { _, newValue in
-                        apply { text, range in
-                            MarkdownFormatter.applyTextColor(text: text, range: range, hex: HexColor.hex(newValue))
-                        }
-                    }
-
-                Button {
-                    apply { text, range in
-                        MarkdownFormatter.applyHighlight(text: text, range: range, hex: HexColor.hex(highlightColor))
-                    }
-                } label: {
-                    Image(systemName: "highlighter")
-                        .frame(width: Theme.minControlSizeCompact, height: Theme.minControlSizeCompact)
-                }
-                .buttonStyle(.plain)
-                ColorPicker("", selection: $highlightColor, supportsOpacity: false)
-                    .labelsHidden()
-                    .frame(width: 32)
 
                 Divider().frame(height: 24)
 

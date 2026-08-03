@@ -95,14 +95,6 @@ enum MarkdownFormatter {
         let newText = ns.replacingCharacters(in: safeRange, with: replacement)
         return Result(text: newText, selection: NSRange(location: safeRange.location + 4, length: (body as NSString).length))
     }
-
-    static func applyTextColor(text: String, range: NSRange, hex: String) -> Result {
-        toggleWrap(text: text, range: range, prefix: "<span style=\"color:\(hex)\">", suffix: "</span>")
-    }
-
-    static func applyHighlight(text: String, range: NSRange, hex: String) -> Result {
-        toggleWrap(text: text, range: range, prefix: "<mark style=\"background-color:\(hex)\">", suffix: "</mark>")
-    }
 }
 
 private extension NSString {

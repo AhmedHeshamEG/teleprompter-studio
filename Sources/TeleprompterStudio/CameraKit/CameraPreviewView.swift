@@ -32,6 +32,14 @@ struct CameraPreviewView: UIViewRepresentable {
         if let connection = uiView.videoPreviewLayer.connection, connection.isVideoRotationAngleSupported(angle) {
             connection.videoRotationAngle = angle
         }
+
+        // Mirror the preview layer to match `videoDataOutput`/`movieFileOutput` exactly —
+        // relying on the preview layer's own automatic mirroring let it disagree with the
+        // capture connections, which is what produced the inconsistent/inverted preview.
+        if let connection = uiView.videoPreviewLayer.connection, connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = cameraSession.isMirrored
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }

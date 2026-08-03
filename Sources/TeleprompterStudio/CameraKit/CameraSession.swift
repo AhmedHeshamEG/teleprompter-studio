@@ -82,6 +82,16 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     private(set) var previewRotationAngle: CGFloat = 90
     private(set) var captureRotationAngle: CGFloat = 90
 
+    /// Whether the active connections are currently mirrored. Published so `CameraPreviewView`
+    /// can apply the exact same mirroring to its own preview-layer connection — previously the
+    /// preview layer relied on `AVCaptureVideoPreviewLayer`'s undocumented default auto-mirror
+    /// behavior while `videoDataOutput` was mirrored explicitly and `movieFileOutput` wasn't
+    /// touched at all, so the three connections could disagree about whether the image should be
+    /// flipped. This is now the single source of truth all three connections apply identically.
+    private(set) var isMirrored = false
+    /// Front camera mirrors by default (selfie-style), matching every stock camera app.
+    var mirrorFrontCamera = true
+
     /// Unique ID of the currently-selected audio input device (built-in mic, wired/Bluetooth
     /// headset mic, or an external USB/Lightning mic), or `nil` if none is attached. `nil` passed
     /// to `setAudioDevice` means "use the system default".
@@ -181,10 +191,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             captureSession.addOutput(audioDataOutput)
         }
 
-        if let connection = videoDataOutput.connection(with: .video), facing == .front, connection.isVideoMirroringSupported {
-            connection.isVideoMirrored = true
-        }
-
+        applyMirroring(facing: facing)
         setUpRotationCoordinator(for: videoDevice)
 
         DispatchQueue.main.async {
@@ -192,6 +199,22 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             self.minZoom = videoDevice.minAvailableVideoZoomFactor
             self.maxZoom = min(videoDevice.maxAvailableVideoZoomFactor, 8)
         }
+    }
+
+    /// Applies mirroring explicitly to `videoDataOutput` and `movieFileOutput`'s connections
+    /// (turning off `automaticallyAdjustsVideoMirroring` first — leaving it on while also setting
+    /// `isVideoMirrored` directly is invalid and AVFoundation ignores the manual value, which is
+    /// why the old front-camera-only override here had no reliable effect). Republishes
+    /// `isMirrored` so `CameraPreviewView` mirrors its own preview layer to match, keeping all
+    /// three connections in agreement.
+    private func applyMirroring(facing: CameraFacing) {
+        let shouldMirror = facing == .front && mirrorFrontCamera
+        for output in [videoDataOutput as AVCaptureOutput, movieFileOutput as AVCaptureOutput] {
+            guard let connection = output.connection(with: .video), connection.isVideoMirroringSupported else { continue }
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = shouldMirror
+        }
+        DispatchQueue.main.async { self.isMirrored = shouldMirror }
     }
 
     /// Drives live rotation for the preview layer and every capture connection off
