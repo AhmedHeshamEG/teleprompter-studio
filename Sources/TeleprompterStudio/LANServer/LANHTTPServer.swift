@@ -27,7 +27,11 @@ final class LANHTTPServer {
 
         do {
             let parameters = NWParameters.tcp
-            parameters.acceptLocalOnly = true
+            // NOT `acceptLocalOnly = true`: despite the name, that restricts the listener to
+            // loopback/same-device connections only, which silently blocks every other device on
+            // the LAN (the "not found" symptom from a laptop browser). The server is already
+            // scoped to the local network by virtue of binding to the Wi-Fi interface's address
+            // and requiring NSLocalNetworkUsageDescription; no extra restriction is needed here.
             guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
                 lastError = "Invalid port \(port)"
                 return

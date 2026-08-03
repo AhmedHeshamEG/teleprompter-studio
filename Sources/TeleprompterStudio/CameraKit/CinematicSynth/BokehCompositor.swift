@@ -26,11 +26,25 @@ final class BokehCompositor {
             y: source.extent.height / mask.extent.height
         ))
 
+        // Vision's segmentation mask is a hard-edged cutout; feathering it with a small blur
+        // before using it to blend gives a soft, natural falloff around hair/shoulders instead
+        // of the harsh "cut-and-paste" edge a raw mask produces.
+        let featherFilter = CIFilter.gaussianBlur()
+        featherFilter.inputImage = scaledMask.clampedToExtent()
+        featherFilter.radius = Float(maskFeatherRadius(for: blurRadius))
+        let featheredMask = featherFilter.outputImage?.cropped(to: source.extent) ?? scaledMask
+
         let blend = CIFilter.blendWithMask()
         blend.inputImage = source
         blend.backgroundImage = blurred
-        blend.maskImage = scaledMask
+        blend.maskImage = featheredMask
         return blend.outputImage ?? source
+    }
+
+    /// Feather radius scales gently with the aperture blur itself: a stronger background blur
+    /// makes a hard mask edge more visually obvious, so it needs more feathering to match.
+    private func maskFeatherRadius(for blurRadius: Double) -> Double {
+        min(6, max(1.5, blurRadius * 0.12))
     }
 
     /// Renders a composited `CIImage` into a freshly allocated pixel buffer matching the given

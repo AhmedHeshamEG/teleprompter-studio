@@ -30,9 +30,9 @@ final class MovieFileRecorder: NSObject {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("mov")
-        if let connection = output.connection(with: .video) {
-            connection.videoRotationAngle = 90
-        }
+        // Rotation is kept live on this connection by `AVCameraSession`'s RotationCoordinator
+        // observers, so no explicit angle needs to be set here — doing so would just stomp on
+        // whatever the device's current physical orientation actually is.
         output.startRecording(to: outputURL, recordingDelegate: self)
         isRecording = true
         startedAt = Date()

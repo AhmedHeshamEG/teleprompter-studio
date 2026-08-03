@@ -74,12 +74,28 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     private(set) var maxZoom: CGFloat = 4.0
     private(set) var torchOn: Bool = false
 
+    /// Live "which way is up" angles from `AVCaptureDevice.RotationCoordinator`, kept in sync
+    /// with the device's physical orientation (including landscape/upside-down) so the preview
+    /// layer and every capture connection can rotate correctly without the app needing to track
+    /// `UIDevice.orientation` itself. Read by `CameraPreviewView` (preview layer) and applied
+    /// internally to `videoDataOutput`/`movieFileOutput` connections on every change.
+    private(set) var previewRotationAngle: CGFloat = 90
+    private(set) var captureRotationAngle: CGFloat = 90
+
+    /// Unique ID of the currently-selected audio input device (built-in mic, wired/Bluetooth
+    /// headset mic, or an external USB/Lightning mic), or `nil` if none is attached. `nil` passed
+    /// to `setAudioDevice` means "use the system default".
+    private(set) var selectedAudioDeviceID: String?
+    private var preferredAudioDeviceID: String?
+
     /// Frames delegate for the synthetic cinematic pipeline / live preview streaming to hook into.
     weak var videoDataDelegate: AVCaptureVideoDataOutputSampleBufferDelegate?
     weak var audioDataDelegate: AVCaptureAudioDataOutputSampleBufferDelegate?
 
     private var videoDeviceInput: AVCaptureDeviceInput?
     private var audioDeviceInput: AVCaptureDeviceInput?
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var rotationObservations: [NSKeyValueObservation] = []
     let movieFileOutput = AVCaptureMovieFileOutput()
     let videoDataOutput = AVCaptureVideoDataOutput()
     let audioDataOutput = AVCaptureAudioDataOutput()
@@ -139,13 +155,15 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         captureSession.addInput(videoInput)
         videoDeviceInput = videoInput
 
-        if let audioDevice = AVCaptureDevice.default(for: .audio) {
+        let resolvedAudioDevice = preferredAudioDeviceID.flatMap(AVCaptureDevice.init(uniqueID:)) ?? AVCaptureDevice.default(for: .audio)
+        if let audioDevice = resolvedAudioDevice {
             let audioInput = try AVCaptureDeviceInput(device: audioDevice)
             if captureSession.canAddInput(audioInput) {
                 captureSession.addInput(audioInput)
                 audioDeviceInput = audioInput
             }
         }
+        DispatchQueue.main.async { self.selectedAudioDeviceID = resolvedAudioDevice?.uniqueID }
 
         if captureSession.canAddOutput(movieFileOutput) {
             captureSession.addOutput(movieFileOutput)
@@ -163,17 +181,57 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
             captureSession.addOutput(audioDataOutput)
         }
 
-        if let connection = videoDataOutput.connection(with: .video) {
-            connection.videoRotationAngle = 90 // portrait
-            if facing == .front, connection.isVideoMirroringSupported {
-                connection.isVideoMirrored = true
-            }
+        if let connection = videoDataOutput.connection(with: .video), facing == .front, connection.isVideoMirroringSupported {
+            connection.isVideoMirrored = true
         }
+
+        setUpRotationCoordinator(for: videoDevice)
 
         DispatchQueue.main.async {
             self.facing = facing
             self.minZoom = videoDevice.minAvailableVideoZoomFactor
             self.maxZoom = min(videoDevice.maxAvailableVideoZoomFactor, 8)
+        }
+    }
+
+    /// Drives live rotation for the preview layer and every capture connection off
+    /// `AVCaptureDevice.RotationCoordinator`, which tracks the device's physical orientation
+    /// (including landscape and upside-down) via the accelerometer — the modern replacement for
+    /// manually mapping `UIDeviceOrientation` to a fixed angle. Re-created whenever the active
+    /// device changes (e.g. front/back toggle) since the coordinator is bound to one device.
+    private func setUpRotationCoordinator(for device: AVCaptureDevice) {
+        rotationObservations.removeAll()
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+        rotationCoordinator = coordinator
+
+        applyRotationAngles(
+            preview: coordinator.videoRotationAngleForHorizonLevelPreview,
+            capture: coordinator.videoRotationAngleForHorizonLevelCapture
+        )
+
+        rotationObservations.append(coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak self] _, change in
+            guard let self, let angle = change.newValue else { return }
+            self.sessionQueue.async { self.applyRotationAngles(preview: angle, capture: nil) }
+        })
+        rotationObservations.append(coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.new]) { [weak self] _, change in
+            guard let self, let angle = change.newValue else { return }
+            self.sessionQueue.async { self.applyRotationAngles(preview: nil, capture: angle) }
+        })
+    }
+
+    /// Applies rotation angles to the relevant connections. Must run on `sessionQueue` (KVO
+    /// callbacks land on an arbitrary thread). `preview` is republished to the main actor for
+    /// `CameraPreviewView` to apply to its own `AVCaptureVideoPreviewLayer` connection.
+    private func applyRotationAngles(preview: CGFloat?, capture: CGFloat?) {
+        if let capture {
+            for output in [videoDataOutput as AVCaptureOutput, movieFileOutput as AVCaptureOutput] {
+                guard let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(capture) else { continue }
+                connection.videoRotationAngle = capture
+            }
+            DispatchQueue.main.async { self.captureRotationAngle = capture }
+        }
+        if let preview {
+            DispatchQueue.main.async { self.previewRotationAngle = preview }
         }
     }
 
@@ -198,6 +256,31 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
                 guard let self else { return }
                 do {
                     try self.configureSessionSync(facing: newFacing)
+                    DispatchQueue.main.async { continuation.resume() }
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Every currently-attached audio input device the user could record with: built-in mic,
+    /// wired/Bluetooth headset mics, and external USB/Lightning mics (e.g. a lav or shotgun mic).
+    nonisolated static func availableAudioDevices() -> [AVCaptureDevice] {
+        AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
+    }
+
+    /// Switches the active audio input. Reconfigures the whole session (same path as
+    /// `toggleFacing`) since that's the simplest correct way to safely swap an `AVCaptureInput`
+    /// on this session — call it from Settings, not mid-recording.
+    func setAudioDevice(_ device: AVCaptureDevice?) async throws {
+        preferredAudioDeviceID = device?.uniqueID
+        let currentFacing = facing
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            sessionQueue.async { [weak self] in
+                guard let self else { return }
+                do {
+                    try self.configureSessionSync(facing: currentFacing)
                     DispatchQueue.main.async { continuation.resume() }
                 } catch {
                     continuation.resume(throwing: error)
