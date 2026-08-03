@@ -1,14 +1,53 @@
 import SwiftUI
 
-/// Full-screen Companion experience: this device mirrors the Director's script + scroll
-/// position live, shows the Director's camera as a live monitor, and can remote-control
-/// playback/recording. All three roles the spec calls out, in one screen.
+/// How the Director's camera is shown on the Companion.
+enum CompanionMonitorMode: String, CaseIterable {
+    /// Fills the screen behind the prompter — the Companion looks like the Director's screen.
+    case full
+    /// Small picture-in-picture in the corner, out of the reader's way.
+    case pip
+    /// Hidden: prompter only, on black.
+    case off
+
+    var next: CompanionMonitorMode {
+        switch self {
+        case .full: return .pip
+        case .pip: return .off
+        case .off: return .full
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .full: return "rectangle.inset.filled"
+        case .pip: return "rectangle.inset.bottomright.filled"
+        case .off: return "rectangle.slash"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .full: return "Full monitor"
+        case .pip: return "Corner monitor"
+        case .off: return "Monitor off"
+        }
+    }
+}
+
+/// Full-screen Companion experience: this device mirrors the Director's script + scroll position
+/// live, shows the Director's camera as a live monitor, and can remote-control playback/recording.
+///
+/// It's deliberately built out of the same pieces as Studio — full-bleed camera behind, the same
+/// draggable/resizable `FloatingPrompterCard` on top, the same chrome — so the second device reads
+/// as the Director's screen rather than as a separate, smaller app. The camera was previously a
+/// fixed 160pt thumbnail pinned to one corner with no way to change it.
 struct CompanionView: View {
     let coordinator: SyncCoordinator
     @Environment(\.dismiss) private var dismiss
 
     @State private var controller = PrompterController()
-    @State private var showMonitor = true
+    @State private var monitorMode: CompanionMonitorMode = .full
+    @State private var overlayHeightFraction: Double = 0.55
 
     /// How far the local scroll may drift from the Director's reported position before it's
     /// snapped back. The Companion scrolls under its own steam at the Director's speed and only
@@ -17,48 +56,32 @@ struct CompanionView: View {
     private let driftTolerance = 0.015
 
     var body: some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
+        GeometryReader { screen in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            NativePrompterView(
-                document: coordinator.latestDocument ?? PrompterDocument(markdown: placeholderText),
-                controller: controller,
-                isInteractivePreview: false
-            )
-            .ignoresSafeArea()
+                // Its own view on purpose: a new frame arrives ~10-18 times a second, and reading
+                // it here would invalidate the whole Companion screen — prompter card included —
+                // at that rate. Same mistake that made the Director's card drag stutter.
+                CompanionMonitor(coordinator: coordinator, mode: monitorMode, screenSize: screen.size)
 
-            if showMonitor, coordinator.isPreviewStreamAvailable, let image = coordinator.latestPreviewImage {
+                FloatingPrompterCard(
+                    document: coordinator.latestDocument ?? PrompterDocument(markdown: placeholderText),
+                    controller: controller,
+                    opacity: 0.92,
+                    heightFraction: $overlayHeightFraction,
+                    screenSize: screen.size
+                )
+
                 VStack {
-                    HStack {
-                        Spacer()
-                        Image(uiImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 160)
-                            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall))
-                            .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall).stroke(Theme.border, lineWidth: 1))
-                            .padding(Theme.spacingM)
-                    }
+                    topBar
                     Spacer()
+                    remoteControls
                 }
-            } else if !coordinator.isPreviewStreamAvailable {
-                VStack {
-                    HStack {
-                        Spacer()
-                        Badge(text: "Prompter mirror only", color: Theme.textSecondary)
-                            .padding(Theme.spacingM)
-                    }
-                    Spacer()
-                }
-            }
-
-            VStack {
-                topBar
-                Spacer()
-                remoteControls
             }
         }
         .statusBarHidden()
+        .preferredColorScheme(.dark)
         .peerInviteAlert(coordinator: coordinator)
         .onChange(of: coordinator.latestDocument) { _, newValue in
             if let newValue { controller.loadDocument(newValue) }
@@ -95,6 +118,9 @@ struct CompanionView: View {
 
     /// Mirrors the Director's transport state, not just its position: same speed, same font size,
     /// same play/pause, with a position correction only when the two have genuinely drifted apart.
+    /// Written straight to the properties rather than through `setSpeed`/`setFontSize`, because
+    /// those persist the value as *this* reader's own preference — mirroring someone else's screen
+    /// shouldn't overwrite the settings this device uses when it's the one being read from.
     private func applyPlaybackState() {
         guard let playback = coordinator.latestPlayback else { return }
         if abs(controller.speedPxPerSec - playback.speed) > 0.5 {
@@ -124,9 +150,12 @@ struct CompanionView: View {
                 RecordingIndicator(isRecording: true, elapsed: coordinator.remoteElapsed)
             }
             Spacer()
-            ChromeButton(systemImage: showMonitor ? "eye" : "eye.slash", size: Theme.minControlSizeCompact) {
-                showMonitor.toggle()
+            // One button, three states: full monitor → corner monitor → off → full. Closing the
+            // camera is never a one-way door.
+            ChromeButton(systemImage: monitorMode.systemImage, size: Theme.minControlSizeCompact) {
+                withAnimation(Theme.quickSpring) { monitorMode = monitorMode.next }
             }
+            .accessibilityLabel(monitorMode.label)
         }
         .padding(Theme.spacingM)
     }
@@ -154,5 +183,51 @@ struct CompanionView: View {
         // can still press reads as a bug.
         .disabled(coordinator.connectionState != .connected)
         .opacity(coordinator.connectionState == .connected ? 1 : 0.4)
+    }
+}
+
+/// The Director's camera as the Companion sees it. Aspect-fit rather than fill: this is a monitor,
+/// and cropping the frame would misrepresent the shot the Director is actually recording.
+private struct CompanionMonitor: View {
+    let coordinator: SyncCoordinator
+    let mode: CompanionMonitorMode
+    let screenSize: CGSize
+
+    var body: some View {
+        if mode != .off, coordinator.isPreviewStreamAvailable, let image = coordinator.latestPreviewImage {
+            switch mode {
+            case .full:
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: screenSize.width, height: screenSize.height)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            case .pip:
+                VStack {
+                    HStack {
+                        Spacer()
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: min(200, screenSize.width * 0.32))
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall))
+                            .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall).stroke(Theme.border, lineWidth: 1))
+                            .padding(.horizontal, Theme.spacingM)
+                            .padding(.top, 64) // clear of the top chrome row
+                    }
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            case .off:
+                EmptyView()
+            }
+        } else if mode != .off, !coordinator.isPreviewStreamAvailable {
+            VStack {
+                Spacer()
+                Badge(text: "Prompter mirror only", color: Theme.textSecondary)
+                    .padding(.bottom, 120)
+            }
+        }
     }
 }
