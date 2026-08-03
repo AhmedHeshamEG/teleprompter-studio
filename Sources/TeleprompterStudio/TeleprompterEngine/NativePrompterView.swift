@@ -36,7 +36,13 @@ struct NativePrompterView: View {
                 textContent
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, geo.size.width * document.marginHorizontalPercent / 100)
-                    .padding(.top, isInteractivePreview ? Theme.spacingM : geo.size.height)
+                    // Text sits visible right at the top at rest (small breathing-room padding
+                    // only) — it must NOT start a full screen-height below the viewport, which
+                    // was the previous bug: the overlay looked completely blank both before and
+                    // right after pressing play, since nothing scrolls into view for several
+                    // seconds. Only the bottom gets a full-viewport-height of trailing space, so
+                    // the last line has somewhere to scroll off to instead of stopping abruptly.
+                    .padding(.top, Theme.spacingM)
                     .padding(.bottom, geo.size.height)
                     .background(heightReader)
                     .offset(y: isInteractivePreview ? 0 : -scrollOffset)
