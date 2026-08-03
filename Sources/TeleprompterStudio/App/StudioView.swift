@@ -13,6 +13,9 @@ struct StudioView: View {
 
     @State private var showingSettingsSheet = false
     @State private var showingPeerSheet = false
+    /// Owned here, not inside `PrompterControlsView`, so the panel can be presented as the
+    /// topmost layer of the whole screen instead of as chrome sitting next to the record button.
+    @State private var showingPrompterSliders = false
 
     /// The prompter text is the floating, hand-draggable element (not the record controls).
     /// Position is stored as a screen-fraction so it stays valid across rotation/resizing
@@ -60,6 +63,10 @@ struct StudioView: View {
                         Badge(text: "Simulated Cinematic", color: Theme.accent)
                     }
                     bottomChrome
+                }
+
+                if showingPrompterSliders {
+                    prompterSlidersLayer
                 }
             }
         }
@@ -211,6 +218,28 @@ struct StudioView: View {
             .onTapGesture { viewModel.errorMessage = nil }
     }
 
+    /// Topmost layer: a full-screen scrim that absorbs every touch, with the speed/font panel
+    /// centered on it. Nothing beneath — record button included — can be hit while it's open, so
+    /// a tap aimed at a slider can't land on record. Tapping the scrim dismisses.
+    private var prompterSlidersLayer: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { closePrompterSliders() }
+
+            PrompterSlidersPanel(controller: viewModel.prompterController) {
+                closePrompterSliders()
+            }
+            .padding(.horizontal, Theme.spacingL)
+        }
+        .transition(.opacity)
+    }
+
+    private func closePrompterSliders() {
+        withAnimation(Theme.quickSpring) { showingPrompterSliders = false }
+    }
+
     private var topBar: some View {
         HStack {
             ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
@@ -236,8 +265,13 @@ struct StudioView: View {
     }
 
     private var bottomChrome: some View {
-        VStack(spacing: Theme.spacingS) {
-            PrompterControlsView(controller: viewModel.prompterController)
+        // Deliberate gap between the transport row and the record row — they were close enough
+        // that a thumb aimed at one could catch the other.
+        VStack(spacing: Theme.spacingM) {
+            PrompterControlsView(
+                controller: viewModel.prompterController,
+                showingSliders: $showingPrompterSliders
+            )
 
             HStack(spacing: Theme.spacingL) {
                 if viewModel.runMode == .record {
