@@ -33,7 +33,6 @@ final class CameraStudioViewModel {
 
     var overlayOpacity: Double = 0.92
     var overlayHeightFraction: Double = 0.55
-    var overlayVerticalOffset: Double = -0.08 // negative = shifted toward lens/top
 
     var showGrid = false
     var focusPoint: CGPoint?

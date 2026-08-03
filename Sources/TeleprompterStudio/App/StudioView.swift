@@ -14,11 +14,12 @@ struct StudioView: View {
     @State private var showingSettingsSheet = false
     @State private var showingPeerSheet = false
 
-    /// Floating control panel position, as a fraction (0...1) of the screen so it stays valid
-    /// across rotation/resizing instead of an absolute point that would land off-screen.
-    @State private var panelPositionFraction = CGPoint(x: 0.5, y: 0.86)
-    @State private var panelDragStart: CGPoint?
-    @State private var panelSize: CGSize = .zero
+    /// The prompter text is the floating, hand-draggable element (not the record controls).
+    /// Position is stored as a screen-fraction so it stays valid across rotation/resizing
+    /// instead of an absolute point that could land off-screen.
+    @State private var promptPositionFraction = CGPoint(x: 0.5, y: 0.42)
+    @State private var promptDragStart: CGPoint?
+    @State private var promptSize: CGSize = .zero
 
     init(script: Script) {
         _viewModel = State(initialValue: CameraStudioViewModel(script: script))
@@ -43,14 +44,16 @@ struct StudioView: View {
                     }
                 }
 
-                prompterOverlay
+                floatingPrompterOverlay(in: screen.size)
 
                 VStack {
                     topBar
                     Spacer()
+                    if viewModel.resolvedCinematicKind == .synthetic {
+                        Badge(text: "Simulated Cinematic", color: Theme.accent)
+                    }
+                    bottomChrome
                 }
-
-                floatingControlPanel(in: screen.size)
             }
         }
         .statusBarHidden()
@@ -83,17 +86,67 @@ struct StudioView: View {
         .preferredColorScheme(.dark)
     }
 
-    private var prompterOverlay: some View {
-        GeometryReader { proxy in
+    /// The scrolling script, as a floating card the user can drag anywhere on screen by its
+    /// handle. Only the handle is hit-testable — `PrompterWebView` itself stays
+    /// `allowsHitTesting(false)` so taps everywhere else (e.g. tap-to-focus on the camera
+    /// underneath) keep working exactly as before.
+    private func floatingPrompterOverlay(in screenSize: CGSize) -> some View {
+        VStack(spacing: 0) {
+            promptDragHandle(screenSize: screenSize)
+
             PrompterWebView(document: viewModel.document, controller: viewModel.prompterController)
-                .opacity(viewModel.overlayOpacity)
-                .frame(height: proxy.size.height * viewModel.overlayHeightFraction)
-                .position(
-                    x: proxy.size.width / 2,
-                    y: proxy.size.height * (0.5 + viewModel.overlayVerticalOffset)
-                )
+                .frame(height: screenSize.height * viewModel.overlayHeightFraction)
+                .allowsHitTesting(false)
         }
-        .allowsHitTesting(false)
+        .frame(width: screenSize.width * 0.92)
+        .opacity(viewModel.overlayOpacity)
+        .onGeometryChange(for: CGSize.self, of: \.size) { promptSize = $0 }
+        .position(
+            x: promptPositionFraction.x * screenSize.width,
+            y: promptPositionFraction.y * screenSize.height
+        )
+        .animation(Theme.smoothSpring, value: screenSize.width) // re-clamp smoothly on rotation
+        .onChange(of: screenSize) { _, newSize in
+            promptPositionFraction = clampedFraction(promptPositionFraction, size: promptSize, screenSize: newSize)
+        }
+    }
+
+    private func promptDragHandle(screenSize: CGSize) -> some View {
+        Capsule()
+            .fill(Theme.textTertiary)
+            .frame(width: 44, height: 5)
+            .padding(.vertical, Theme.spacingS)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.001)) // keeps the whole handle row tappable, not just the capsule glyph
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .local)
+                    .onChanged { value in
+                        let start = promptDragStart ?? promptPositionFraction
+                        if promptDragStart == nil { promptDragStart = start }
+                        promptPositionFraction = clampedFraction(
+                            CGPoint(
+                                x: start.x + value.translation.width / max(screenSize.width, 1),
+                                y: start.y + value.translation.height / max(screenSize.height, 1)
+                            ),
+                            size: promptSize,
+                            screenSize: screenSize
+                        )
+                    }
+                    .onEnded { _ in promptDragStart = nil }
+            )
+    }
+
+    /// Keeps the card's center far enough from every edge that its own bounds (half-extent,
+    /// converted to fractions of the current screen size) never leave the visible screen.
+    private func clampedFraction(_ point: CGPoint, size: CGSize, screenSize: CGSize) -> CGPoint {
+        guard screenSize.width > 0, screenSize.height > 0 else { return point }
+        let halfWidthFraction = (size.width / 2 + Theme.spacingS) / screenSize.width
+        let halfHeightFraction = (size.height / 2 + Theme.spacingS) / screenSize.height
+        return CGPoint(
+            x: min(max(point.x, halfWidthFraction), 1 - halfWidthFraction),
+            y: min(max(point.y, halfHeightFraction), 1 - halfHeightFraction)
+        )
     }
 
     private var topBar: some View {
@@ -120,34 +173,8 @@ struct StudioView: View {
         .padding(Theme.spacingM)
     }
 
-    /// The prompter/record controls as a self-contained panel the user can drag anywhere on
-    /// screen with a finger, rather than a bar pinned to the bottom. Position is stored as a
-    /// screen-fraction (`panelPositionFraction`) so it stays valid across device rotation, and
-    /// dragging is clamped so the panel can never be dragged fully off-screen.
-    private func floatingControlPanel(in screenSize: CGSize) -> some View {
+    private var bottomChrome: some View {
         VStack(spacing: Theme.spacingS) {
-            dragHandle
-                .contentShape(Rectangle().inset(by: -12)) // generous hit target for the handle
-                .gesture(
-                    DragGesture(minimumDistance: 2, coordinateSpace: .local)
-                        .onChanged { value in
-                            let start = panelDragStart ?? panelPositionFraction
-                            if panelDragStart == nil { panelDragStart = start }
-                            panelPositionFraction = clampedFraction(
-                                CGPoint(
-                                    x: start.x + value.translation.width / max(screenSize.width, 1),
-                                    y: start.y + value.translation.height / max(screenSize.height, 1)
-                                ),
-                                screenSize: screenSize
-                            )
-                        }
-                        .onEnded { _ in panelDragStart = nil }
-                )
-
-            if viewModel.resolvedCinematicKind == .synthetic {
-                Badge(text: "Simulated Cinematic", color: Theme.accent)
-            }
-
             PrompterControlsView(controller: viewModel.prompterController)
 
             HStack(spacing: Theme.spacingL) {
@@ -181,40 +208,8 @@ struct StudioView: View {
                     }
                 }
             }
-            .padding(.bottom, Theme.spacingS)
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusLarge).stroke(Theme.border, lineWidth: 1))
-        .compositingGroup()
-        .shadow(color: .black.opacity(0.35), radius: 16, y: 6)
-        .onGeometryChange(for: CGSize.self, of: \.size) { panelSize = $0 }
-        .position(
-            x: panelPositionFraction.x * screenSize.width,
-            y: panelPositionFraction.y * screenSize.height
-        )
-        .animation(Theme.smoothSpring, value: screenSize.width) // re-clamp smoothly on rotation
-        .onChange(of: screenSize) { _, newSize in
-            panelPositionFraction = clampedFraction(panelPositionFraction, screenSize: newSize)
-        }
-    }
-
-    /// Keeps the panel's center far enough from every edge that its own bounds (half-extent,
-    /// converted to fractions of the current screen size) never leave the visible screen.
-    private func clampedFraction(_ point: CGPoint, screenSize: CGSize) -> CGPoint {
-        guard screenSize.width > 0, screenSize.height > 0 else { return point }
-        let halfWidthFraction = (panelSize.width / 2 + Theme.spacingS) / screenSize.width
-        let halfHeightFraction = (panelSize.height / 2 + Theme.spacingS) / screenSize.height
-        return CGPoint(
-            x: min(max(point.x, halfWidthFraction), 1 - halfWidthFraction),
-            y: min(max(point.y, halfHeightFraction), 1 - halfHeightFraction)
-        )
-    }
-
-    private var dragHandle: some View {
-        Capsule()
-            .fill(Theme.textTertiary)
-            .frame(width: 36, height: 5)
-            .padding(.top, Theme.spacingS)
+        .padding(.bottom, Theme.spacingM)
     }
 }
 
