@@ -128,6 +128,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// separate from the `@Observable` `previewRotationAngle`/`isMirrored` (which exist for any
     /// other UI that wants to read them) so `syncPreviewLayerNow()` never has to hop to main.
     private var lastPreviewAngle: CGFloat = 90
+    private var lastCaptureAngle: CGFloat = 90
     private var lastMirrored = false
 
     /// Unique ID of the currently-selected audio input device (built-in mic, wired/Bluetooth
@@ -287,6 +288,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// `CameraPreviewView` to apply to its own `AVCaptureVideoPreviewLayer` connection.
     private func applyRotationAngles(preview: CGFloat?, capture: CGFloat?) {
         if let capture {
+            lastCaptureAngle = capture
             for output in [videoDataOutput as AVCaptureOutput, movieFileOutput as AVCaptureOutput] {
                 guard let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(capture) else { continue }
                 connection.videoRotationAngle = capture
@@ -351,6 +353,45 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    /// Best-effort, non-throwing, correctly-sequenced version of `setResolution`.
+    ///
+    /// `setResolution` mutates `AVCaptureDevice.activeFormat` from whatever thread calls it (in
+    /// practice the main actor) and outside any `beginConfiguration`/`commitConfiguration` pair.
+    /// Swapping the active format that way while `movieFileOutput` is attached can drop the
+    /// output's connections — after which `startRecording` is a silent no-op and the record button
+    /// appears dead. This does it on `sessionQueue`, inside a configuration transaction, and
+    /// leaves the session untouched when no matching format exists.
+    func applyResolution(_ resolution: CaptureResolution, fps: Double) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            guard let format = Self.bestFormat(for: device, resolution: resolution, fps: fps) else { return }
+            self.captureSession.beginConfiguration()
+            defer { self.captureSession.commitConfiguration() }
+            do {
+                try device.lockForConfiguration()
+                device.activeFormat = format
+                let duration = CMTime(value: 1, timescale: Int32(fps))
+                device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
+                device.unlockForConfiguration()
+            } catch {
+                return
+            }
+            // Format changes rebuild connections, so rotation and mirroring have to be re-applied.
+            self.applyMirroring(facing: self.facing)
+            self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
+        }
+    }
+
+    private static func bestFormat(for device: AVCaptureDevice, resolution: CaptureResolution, fps: Double) -> AVCaptureDevice.Format? {
+        let target = resolution.dimensions
+        return device.formats.first { format in
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return Int(dims.width) == target.width && Int(dims.height) == target.height
+                && format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= fps }
         }
     }
 

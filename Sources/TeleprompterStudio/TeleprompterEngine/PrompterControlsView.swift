@@ -12,63 +12,81 @@ struct PrompterControlsView: View {
     var body: some View {
         VStack(spacing: Theme.spacingM) {
             progressBar
-
-            HStack(spacing: Theme.spacingL) {
-                ChromeButton(systemImage: "gobackward", size: Theme.minControlSizeCompact) {
-                    controller.jumpToTop()
-                }
-
-                ChromeButton(systemImage: controller.isPlaying ? "pause.fill" : "play.fill", isActive: true) {
-                    controller.toggle()
-                }
-
-                ChromeButton(systemImage: "timer", size: Theme.minControlSizeCompact) {
-                    controller.startCountdown(seconds: 3)
-                }
-
-                ChromeButton(systemImage: "slider.horizontal.3", isActive: showingSliders, size: Theme.minControlSizeCompact) {
-                    withAnimation(Theme.quickSpring) { showingSliders.toggle() }
-                }
-            }
-
-            if showingSliders {
-                VStack(spacing: Theme.spacingS) {
-                    LabeledSlider(
-                        label: "Speed",
-                        systemImage: "speedometer",
-                        value: $controller.speedPxPerSec,
-                        range: 10...400
-                    ) { "\(Int($0)) px/s" }
-                    .onChange(of: controller.speedPxPerSec) { _, newValue in
-                        controller.setSpeed(newValue)
-                    }
-
-                    LabeledSlider(
-                        label: "Font Size",
-                        systemImage: "textformat.size",
-                        value: $controller.fontSize,
-                        range: 18...120
-                    ) { "\(Int($0)) pt" }
-                    .onChange(of: controller.fontSize) { _, newValue in
-                        controller.setFontSize(newValue)
-                    }
-
-                    Picker("Guide", selection: Binding(
-                        get: { controller.guideMode },
-                        set: { controller.setGuide($0) }
-                    )) {
-                        Text("Line").tag(PrompterGuideMode.line)
-                        Text("Band").tag(PrompterGuideMode.band)
-                        Text("Off").tag(PrompterGuideMode.none)
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding(Theme.spacingM)
-                .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            transportRow
         }
         .padding(Theme.spacingM)
+        // The sliders panel is an *overlay* anchored above the transport row, not another row in
+        // the stack. As a stack row it changed the stack's height, which pushed the whole
+        // bottom-anchored chrome upward — so the button the user had just tapped moved out from
+        // under their finger and the second tap (meant to close the panel) landed on the panel
+        // instead. The row now never moves, so tapping the same spot toggles it shut.
+        .overlay(alignment: .top) {
+            if showingSliders {
+                slidersPanel
+                    .alignmentGuide(.top) { $0[.bottom] + Theme.spacingS }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+
+    private var transportRow: some View {
+        HStack(spacing: Theme.spacingL) {
+            ChromeButton(systemImage: "gobackward", size: Theme.minControlSizeCompact) {
+                controller.jumpToTop()
+            }
+
+            ChromeButton(systemImage: controller.isPlaying ? "pause.fill" : "play.fill", isActive: true) {
+                controller.toggle()
+            }
+
+            ChromeButton(systemImage: "timer", size: Theme.minControlSizeCompact) {
+                controller.startCountdown(seconds: 3)
+            }
+
+            ChromeButton(systemImage: "slider.horizontal.3", isActive: showingSliders, size: Theme.minControlSizeCompact) {
+                withAnimation(Theme.quickSpring) { showingSliders.toggle() }
+            }
+        }
+    }
+
+    private var slidersPanel: some View {
+        VStack(spacing: Theme.spacingS) {
+            LabeledSlider(
+                label: "Speed",
+                systemImage: "speedometer",
+                value: $controller.speedPxPerSec,
+                range: 10...400
+            ) { "\(Int($0)) px/s" }
+
+            LabeledSlider(
+                label: "Font Size",
+                systemImage: "textformat.size",
+                value: $controller.fontSize,
+                range: 18...120
+            ) { "\(Int($0)) pt" }
+
+            Picker("Guide", selection: Binding(
+                get: { controller.guideMode },
+                set: { controller.setGuide($0) }
+            )) {
+                Text("Line").tag(PrompterGuideMode.line)
+                Text("Band").tag(PrompterGuideMode.band)
+                Text("Off").tag(PrompterGuideMode.none)
+            }
+            .pickerStyle(.segmented)
+
+            Button("Close") {
+                withAnimation(Theme.quickSpring) { showingSliders = false }
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.top, Theme.spacingXS)
+        }
+        .padding(Theme.spacingM)
+        .frame(maxWidth: 460)
+        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium).stroke(Theme.border, lineWidth: 1))
+        .padding(.horizontal, Theme.spacingM)
     }
 
     private var progressBar: some View {

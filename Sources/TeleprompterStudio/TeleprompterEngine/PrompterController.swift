@@ -83,6 +83,13 @@ final class PrompterController {
         }
     }
 
+    /// Aborts a running 3-2-1 without starting playback (used when the take is called off).
+    func cancelCountdown() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        countdownSecondsRemaining = nil
+    }
+
     /// Called by `NativePrompterView` when autoscroll reaches the end of the script.
     func markFinished() {
         isPlaying = false

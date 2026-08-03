@@ -12,9 +12,13 @@ final class MovieFileRecorder: NSObject {
     private(set) var isRecording = false
     private var startedAt: Date?
 
-    var elapsedProvider: (() -> TimeInterval)? {
-        didSet {}
-    }
+    /// Called when `AVCaptureMovieFileOutput` ends a recording that nobody is awaiting — i.e. the
+    /// capture died on its own (no disk space, session interrupted, connection torn down by a
+    /// mid-take reconfiguration). Previously that delegate callback resumed a `nil` continuation
+    /// and the error vanished, leaving the UI showing "recording" while nothing was being written
+    /// and the eventual Stop failing with `notRecording`. That is the "record button does
+    /// nothing" symptom: it *was* doing something, the failure just had nowhere to go.
+    var onUnexpectedStop: ((Error?) -> Void)?
 
     init(output: AVCaptureMovieFileOutput) {
         self.output = output
@@ -27,6 +31,11 @@ final class MovieFileRecorder: NSObject {
 
     func start() throws -> URL {
         guard !isRecording else { throw RecorderError.alreadyRecording }
+        // `startRecording` on an output with no active video connection is a silent no-op, so
+        // check up front and fail loudly instead.
+        guard let connection = output.connection(with: .video), connection.isActive else {
+            throw RecorderError.noActiveConnection
+        }
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("mov")
@@ -57,24 +66,32 @@ extension MovieFileRecorder: AVCaptureFileOutputRecordingDelegate {
     ) {
         isRecording = false
         startedAt = nil
-        if let error {
-            continuation?.resume(throwing: error)
-        } else {
-            continuation?.resume(returning: outputFileURL)
+        guard let continuation else {
+            onUnexpectedStop?(error)
+            return
         }
-        continuation = nil
+        self.continuation = nil
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume(returning: outputFileURL)
+        }
     }
 }
 
 enum RecorderError: Error, LocalizedError {
     case alreadyRecording
     case notRecording
+    case noActiveConnection
+    case sessionNotRunning
     case saveFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .alreadyRecording: return "A recording is already in progress."
         case .notRecording: return "No recording is currently in progress."
+        case .noActiveConnection: return "The camera isn't connected to the recorder yet. Wait for the preview, then try again."
+        case .sessionNotRunning: return "The camera isn't running yet. Wait for the preview, then try again."
         case .saveFailed(let reason): return "Failed to save recording: \(reason)"
         }
     }
