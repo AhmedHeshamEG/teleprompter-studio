@@ -3,13 +3,13 @@ import SwiftUI
 import UIKit
 
 struct CameraPreviewView: UIViewRepresentable {
-    let session: AVCaptureSession
+    let cameraSession: AVCameraSession
     var onTap: ((CGPoint) -> Void)?
     var onPinch: ((CGFloat) -> Void)?
 
     func makeUIView(context: Context) -> PreviewUIView {
         let view = PreviewUIView()
-        view.videoPreviewLayer.session = session
+        view.videoPreviewLayer.session = cameraSession.captureSession
         view.videoPreviewLayer.videoGravity = .resizeAspectFill
 
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
@@ -25,6 +25,13 @@ struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
         context.coordinator.onTap = onTap
         context.coordinator.onPinch = onPinch
+
+        // Keeps the preview upright as the device rotates; `previewRotationAngle` is driven
+        // live by `AVCameraSession`'s `AVCaptureDevice.RotationCoordinator` observers.
+        let angle = cameraSession.previewRotationAngle
+        if let connection = uiView.videoPreviewLayer.connection, connection.isVideoRotationAngleSupported(angle) {
+            connection.videoRotationAngle = angle
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
