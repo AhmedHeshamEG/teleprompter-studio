@@ -9,4 +9,13 @@ DerivedData/
 
 /xtool
 
-*.ipa
+# Secrets / credentials — never commit these
+.env
+.env.*
+*.p12
+*.p8
+*.pem
+*.cer
+*.mobileprovision
+*.keystore
+*.jks
