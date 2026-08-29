@@ -23,6 +23,15 @@ struct FloatingPrompterCard: View {
     /// same value from a slider, and the two controls have to agree.
     @Binding var heightFraction: Double
     let screenSize: CGSize
+    /// Screen space the surrounding chrome occupies, in points. The card is confined to what's
+    /// left: it can be dragged and resized anywhere in that region and nowhere outside it.
+    ///
+    /// Without this the card was clamped to the *whole* screen while the top bar and the transport
+    /// / capture controls were drawn on top of it — so in landscape, where the controls sit in a
+    /// single wide row and the screen is only ~390pt tall to begin with, the bottom of the card
+    /// (and often its resize grip, and in a tall card its drag handle) ended up underneath chrome
+    /// that swallows the touch. The card was there; it just couldn't be grabbed.
+    var chromeInsets: PrompterChromeInsets = .zero
 
     @State private var positionFraction = CGPoint(x: 0.5, y: 0.42)
     /// Card width as a fraction of screen width, adjusted by the corner grip.
@@ -33,6 +42,28 @@ struct FloatingPrompterCard: View {
     @State private var cardSize: CGSize = .zero
     @State private var didApplyInitialLayout = false
 
+    /// Height of the drag-handle row above the script, which counts toward the card's footprint
+    /// when working out how tall the body may be.
+    private static let handleHeight: CGFloat = 5 + Theme.spacingS * 2
+
+    /// The region of the screen the card is allowed to occupy.
+    private var availableRect: CGRect {
+        chromeInsets.availableRect(in: screenSize)
+    }
+
+    /// Largest body height (as a fraction of screen height) whose card still fits between the
+    /// chrome, so the resize grip and the height slider can't push it under the controls.
+    private var maxHeightFraction: Double {
+        guard screenSize.height > 0 else { return 0.92 }
+        let usable = max(120, availableRect.height - Self.handleHeight)
+        return min(0.92, Double(usable / screenSize.height))
+    }
+
+    private var maxWidthFraction: Double {
+        guard screenSize.width > 0 else { return 1.0 }
+        return min(1.0, Double(availableRect.width / screenSize.width))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             dragHandle
@@ -41,7 +72,7 @@ struct FloatingPrompterCard: View {
             // nudge the script by hand mid-take. Tap-to-focus still works anywhere outside the card.
             NativePrompterView(document: document, controller: controller)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
-                .frame(height: screenSize.height * heightFraction)
+                .frame(height: screenSize.height * min(heightFraction, maxHeightFraction))
                 .overlay(alignment: .bottomTrailing) { resizeGrip }
         }
         .overlay(
@@ -49,7 +80,7 @@ struct FloatingPrompterCard: View {
                 .stroke(Theme.border, lineWidth: 1)
                 .allowsHitTesting(false)
         )
-        .frame(width: screenSize.width * widthFraction)
+        .frame(width: screenSize.width * min(widthFraction, maxWidthFraction))
         .opacity(opacity)
         .onGeometryChange(for: CGSize.self, of: \.size) { cardSize = $0 }
         .offset(dragTranslation)
@@ -62,6 +93,11 @@ struct FloatingPrompterCard: View {
         .onChange(of: screenSize) { oldSize, newSize in
             reflow(from: oldSize, to: newSize)
         }
+        // The chrome measures itself after first layout, and its height changes when the screen
+        // rotates (one wide row in landscape, two stacked rows in portrait). Re-clamp whenever it
+        // moves, or a card placed under the old chrome height stays unreachable.
+        .onChange(of: chromeInsets) { _, _ in clampIntoAvailableArea() }
+        .onChange(of: cardSize) { _, _ in clampIntoAvailableArea() }
     }
 
     private var dragHandle: some View {
@@ -108,10 +144,13 @@ struct FloatingPrompterCard: View {
                         // points grows the card by N on that side and N on the opposite one.
                         let widthDelta = 2 * value.translation.width / max(screenSize.width, 1)
                         let heightDelta = 2 * value.translation.height / max(screenSize.height, 1)
-                        widthFraction = min(max(start.width + widthDelta, 0.35), 1.0)
-                        heightFraction = min(max(start.height + heightDelta, 0.15), 0.92)
+                        widthFraction = min(max(start.width + widthDelta, 0.35), maxWidthFraction)
+                        heightFraction = min(max(start.height + heightDelta, 0.15), maxHeightFraction)
                     }
-                    .onEnded { _ in resizeStart = nil }
+                    .onEnded { _ in
+                        resizeStart = nil
+                        clampIntoAvailableArea()
+                    }
             )
     }
 
@@ -123,8 +162,8 @@ struct FloatingPrompterCard: View {
         guard oldSize.width > 0, oldSize.height > 0, newSize.width > 0, newSize.height > 0 else { return }
         let widthPoints = oldSize.width * widthFraction
         let heightPoints = oldSize.height * heightFraction
-        widthFraction = min(max(widthPoints / newSize.width, 0.35), 1.0)
-        heightFraction = min(max(heightPoints / newSize.height, 0.15), 0.92)
+        widthFraction = min(max(widthPoints / newSize.width, 0.35), maxWidthFraction)
+        heightFraction = min(max(heightPoints / newSize.height, 0.15), maxHeightFraction)
         positionFraction = clamped(positionFraction, in: newSize)
     }
 
@@ -136,19 +175,52 @@ struct FloatingPrompterCard: View {
         didApplyInitialLayout = true
         guard screenSize.width > screenSize.height else { return }
         widthFraction = 0.6
-        heightFraction = 0.52
-        positionFraction = CGPoint(x: 0.5, y: 0.36)
+        heightFraction = min(0.52, maxHeightFraction)
+        // Centred in the space the chrome leaves rather than at a fixed 36% of the screen, which
+        // in landscape put the card's lower half behind the control row.
+        positionFraction = CGPoint(x: 0.5, y: availableRect.midY / screenSize.height)
     }
 
-    /// Keeps the card's center far enough from every edge that its own bounds never leave the
-    /// visible screen.
+    /// Pulls the card back inside `availableRect` after anything that could have left it straddling
+    /// the chrome: a resize, a rotation, or the chrome itself changing height.
+    private func clampIntoAvailableArea() {
+        guard screenSize.width > 0, screenSize.height > 0 else { return }
+        heightFraction = min(heightFraction, maxHeightFraction)
+        widthFraction = min(widthFraction, maxWidthFraction)
+        positionFraction = clamped(positionFraction, in: screenSize)
+    }
+
+    /// Keeps the card's center far enough from every edge of the *available* region that its own
+    /// bounds never end up outside it — off-screen, or underneath the chrome.
     private func clamped(_ point: CGPoint, in screenSize: CGSize) -> CGPoint {
         guard screenSize.width > 0, screenSize.height > 0 else { return point }
-        let halfWidthFraction = (cardSize.width / 2 + Theme.spacingS) / screenSize.width
-        let halfHeightFraction = (cardSize.height / 2 + Theme.spacingS) / screenSize.height
+        let region = availableRect
+        let halfWidth = cardSize.width / 2 + Theme.spacingS
+        let halfHeight = cardSize.height / 2 + Theme.spacingS
+        // A card taller/wider than the region (possible for a moment before a resize settles)
+        // centres in it instead of producing an inverted range.
+        let minX = min(region.minX + halfWidth, region.midX)
+        let maxX = max(region.maxX - halfWidth, region.midX)
+        let minY = min(region.minY + halfHeight, region.midY)
+        let maxY = max(region.maxY - halfHeight, region.midY)
         return CGPoint(
-            x: min(max(point.x, halfWidthFraction), 1 - halfWidthFraction),
-            y: min(max(point.y, halfHeightFraction), 1 - halfHeightFraction)
+            x: min(max(point.x * screenSize.width, minX), maxX) / screenSize.width,
+            y: min(max(point.y * screenSize.height, minY), maxY) / screenSize.height
         )
+    }
+}
+
+/// How much of the screen's top and bottom edges the surrounding chrome occupies. Measured by the
+/// screen that owns the chrome (Studio, Companion) and handed to the card, so the card never has
+/// to know what that chrome *is* — only how much room it leaves.
+struct PrompterChromeInsets: Equatable {
+    var top: CGFloat = 0
+    var bottom: CGFloat = 0
+
+    static let zero = PrompterChromeInsets()
+
+    func availableRect(in screenSize: CGSize) -> CGRect {
+        let height = max(120, screenSize.height - top - bottom)
+        return CGRect(x: 0, y: top, width: screenSize.width, height: height)
     }
 }

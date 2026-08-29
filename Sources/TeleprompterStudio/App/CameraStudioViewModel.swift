@@ -27,6 +27,10 @@ final class CameraStudioViewModel {
     private let videoMultiplexer = VideoFrameMultiplexer()
     /// Destination for live cinematic composite frames — see `CinematicPreviewSink`.
     let cinematicPreview = CinematicPreviewSink()
+    /// Live Cinematic subject metadata, shared between the preview overlay (which draws the
+    /// system's detected subjects) and `realCinematic` (which matches a tap to one of them).
+    let cinematicSubjectRelay = CinematicSubjectRelay()
+    private lazy var cinematicSubjectObserver = CinematicSubjectObserver(relay: cinematicSubjectRelay)
 
     var runMode: StudioRunMode = .record
     var cinematicMode: CinematicMode = .off
@@ -84,6 +88,13 @@ final class CameraStudioViewModel {
     /// stock Camera app opens at.
     private(set) var cinematicAperture: Double = 2.8
 
+    /// The f-stop range the hardware will honour for the active Cinematic format, falling back to
+    /// a sane span when the system doesn't publish one.
+    var cinematicApertureRange: ClosedRange<Double> {
+        guard let range = session.cinematicApertureRange else { return 2...16 }
+        return Double(range.min)...Double(range.max)
+    }
+
     func setCinematicAperture(_ fNumber: Double) {
         cinematicAperture = fNumber
         session.setCinematicAperture(Float(fNumber))
@@ -110,6 +121,13 @@ final class CameraStudioViewModel {
         videoMultiplexer.add(recordingCoordinator.synthetic)
         session.videoDataDelegate = videoMultiplexer
         session.audioDataDelegate = recordingCoordinator.synthetic
+        // Subject detection for Apple's Cinematic path. The output it feeds is only attached to
+        // the session while hardware Cinematic is actually running, so this costs nothing the rest
+        // of the time.
+        session.cinematicMetadataDelegate = cinematicSubjectObserver
+        cinematicSubjectRelay.onSubjects = { [weak self] subjects in
+            self?.realCinematic.updateDetectedSubjects(subjects)
+        }
         previewStreamer.onFrameEncoded = { [weak self] jpeg in
             Task { @MainActor in self?.syncCoordinator?.publishPreviewFrame(jpeg) }
         }
@@ -253,7 +271,15 @@ final class CameraStudioViewModel {
         }
     }
 
+    /// A tap on the preview. While Apple's Cinematic path is running this is a **rack focus**, not
+    /// an autofocus: the system takes the point, finds the subject there, starts tracking it and
+    /// pulls focus onto it with the chosen focus style — which is the whole reason to shoot
+    /// Cinematic in the first place. Everywhere else it stays ordinary tap-to-focus/expose.
     func focus(at point: CGPoint) {
+        if resolvedCinematicKind == .real, realCinematic.rackFocus(at: point, on: session) {
+            focusPoint = point
+            return
+        }
         session.focus(at: point)
         focusPoint = point
     }
@@ -278,6 +304,12 @@ final class CameraStudioViewModel {
         }
 
         guard session.isCinematicSupported, (try? realCinematic.enable(on: session)) != nil else {
+            // The device or OS can't do hardware Cinematic at all — worth saying plainly, since
+            // the simulated effect looks similar enough that people reasonably assume it's the
+            // real one and wonder why the file has no depth track.
+            errorMessage = CinematicVideoSupport.isAvailableOnThisOS
+                ? "This camera can't shoot Cinematic. Using the simulated effect."
+                : "Cinematic capture needs iOS 26 or later. Using the simulated effect."
             settleCinematicKind() // → synthetic
             return
         }
@@ -297,7 +329,13 @@ final class CameraStudioViewModel {
             applyCinematicKind(.none)
             return
         }
-        applyCinematicKind(session.isCinematicActive ? .real : .synthetic)
+        let isReal = session.isCinematicActive
+        // Say *why* the hardware path didn't take, once, when it doesn't. Falling back silently is
+        // what makes "does this phone actually do real Cinematic?" unanswerable from inside the app.
+        if !isReal, let reason = session.cinematicUnavailableReason {
+            errorMessage = reason
+        }
+        applyCinematicKind(isReal ? .real : .synthetic)
     }
 
     /// Routes the pipeline for a given cinematic kind: raw frame taps and the live composite

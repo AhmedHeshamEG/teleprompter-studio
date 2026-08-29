@@ -1,10 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// UIKit-backed prompter surface: a `UIScrollView` holding one `UILabel`, scrolled by a
-/// `CADisplayLink`.
+/// UIKit-backed prompter surface: a `UITextView` scrolled by a `CADisplayLink`.
 ///
-/// Why not plain SwiftUI: the previous renderer advanced a `@State` scroll offset from a 60 Hz
+/// Why not plain SwiftUI: the original renderer advanced a `@State` scroll offset from a 60 Hz
 /// `Timer` publisher, so every single frame re-evaluated the SwiftUI view body, re-laid-out the
 /// entire script `Text`, and re-composited it over the live camera preview. That is what made the
 /// overlay feel laggy, and it also made "play" fragile — the scroll only advanced if that
@@ -12,6 +11,16 @@ import UIKit
 /// `contentOffset` moved on the display link: no SwiftUI invalidation per frame, layout is done
 /// once per text/size change, and playback is a property on a UIKit object rather than an emergent
 /// property of the view tree.
+///
+/// **Why a `UITextView` and not a `UILabel` in a `UIScrollView`** (which is what this was): a
+/// `UILabel` draws its entire text into *one* backing layer. Core Animation silently refuses to
+/// render a layer taller than the GPU's maximum texture size (8192 or 16384 points depending on
+/// the device), so past a certain content height the label drew *nothing at all* — leaving the
+/// card's translucent black background with no text on it. Content height is
+/// `lines × fontSize × lineHeight`, so the failure appears as a **font-size threshold**: a script
+/// that renders fine at 40pt goes completely black at 46pt. `UITextView` is TextKit-backed and
+/// tiles its rendering to the visible viewport, so it has no such ceiling — the script draws
+/// correctly at any size in the 18–120pt range, at any length.
 struct PrompterTextView: UIViewRepresentable {
     var text: String
     var fontSize: Double
@@ -32,7 +41,7 @@ struct PrompterTextView: UIViewRepresentable {
     var onJumpConsumed: () -> Void
 
     func makeUIView(context: Context) -> PrompterScrollView {
-        let view = PrompterScrollView()
+        let view = PrompterScrollView(frame: .zero)
         view.onProgress = onProgress
         view.onFinished = onFinished
         context.coordinator.lastJumpToTopToken = jumpToTopToken
@@ -81,8 +90,11 @@ struct PrompterTextView: UIViewRepresentable {
 /// The actual scrolling surface. Owns its own display link so playback keeps advancing at a
 /// steady rate regardless of what SwiftUI is doing above it (including while the user drags the
 /// floating card around, which used to visibly stall the old timer-driven scroll).
-final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
-    private let label = UILabel()
+///
+/// A `UITextView` *is* a `UIScrollView`, so everything the previous implementation did with
+/// `contentOffset` still applies verbatim — it just gained TextKit's viewport-tiled rendering,
+/// which is what makes large font sizes work (see `PrompterTextView`).
+final class PrompterScrollView: UITextView, UITextViewDelegate {
     private var displayLink: CADisplayLink?
     private var lastTimestamp: CFTimeInterval = 0
     private var lastReportedProgress: Double = -1
@@ -90,14 +102,14 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
     private var isApplyingProgrammaticOffset = false
 
     /// Cached inputs so `configureText` can no-op when nothing actually changed — `updateUIView`
-    /// runs on every SwiftUI update, and re-measuring a full script is not free.
+    /// runs on every SwiftUI update, and re-typesetting a full script is not free.
     private var cachedText: String?
     private var cachedFontSize: CGFloat = 0
     private var cachedLineHeight: CGFloat = 0
     private var cachedColor: UIColor = .white
     private var cachedInsetPercent: CGFloat = 0
-    private var lastLayoutWidth: CGFloat = 0
-    private var lastLayoutHeight: CGFloat = 0
+    private var lastInsetWidth: CGFloat = 0
+    private var lastInsetHeight: CGFloat = 0
 
     var speedPxPerSec: Double = PrompterPreferences.defaultSpeed
     var isUserScrollEnabled = true {
@@ -109,7 +121,10 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
     private(set) var isPlaying = false
 
     override init(frame: CGRect) {
-        super.init(frame: frame)
+        // TextKit 2 (the default for a plain `UITextView` on iOS 16+) lays out and renders only
+        // the visible viewport, which is precisely the property this view needs. Passing a `nil`
+        // text container is what asks for that default rather than a hand-built TextKit 1 stack.
+        super.init(frame: frame, textContainer: nil)
         backgroundColor = .clear
         showsVerticalScrollIndicator = false
         showsHorizontalScrollIndicator = false
@@ -117,12 +132,14 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
         bounces = false
         contentInsetAdjustmentBehavior = .never
         decelerationRate = .normal
+        isEditable = false
+        isSelectable = false            // a prompter is read, not selected; also kills the magnifier
+        textContainer.lineFragmentPadding = 0
+        textContainer.lineBreakMode = .byWordWrapping
+        // The prompter never scrolls sideways: without this a long unbroken word (a URL, say)
+        // would widen the content instead of wrapping.
+        textContainer.widthTracksTextView = true
         delegate = self
-
-        label.numberOfLines = 0
-        label.lineBreakMode = .byWordWrapping
-        label.backgroundColor = .clear
-        addSubview(label)
     }
 
     @available(*, unavailable)
@@ -148,11 +165,12 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
         color: UIColor,
         horizontalInsetPercent: CGFloat
     ) {
+        let insetsChanged = cachedInsetPercent != horizontalInsetPercent
         let unchanged = cachedText == text
             && cachedFontSize == fontSize
             && cachedLineHeight == lineHeight
             && cachedColor == color
-            && cachedInsetPercent == horizontalInsetPercent
+            && !insetsChanged
         guard !unchanged else { return }
 
         let textChanged = cachedText != nil && cachedText != text
@@ -165,7 +183,7 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = max(0, (lineHeight - 1) * fontSize)
         paragraph.alignment = .left
-        label.attributedText = NSAttributedString(
+        attributedText = NSAttributedString(
             string: text.isEmpty ? " " : text,
             attributes: [
                 .font: UIFont.systemFont(ofSize: fontSize, weight: .semibold),
@@ -173,36 +191,36 @@ final class PrompterScrollView: UIScrollView, UIScrollViewDelegate {
                 .paragraphStyle: paragraph,
             ]
         )
-        lastLayoutWidth = 0 // force a re-measure on the next layout pass
+        lastInsetWidth = 0 // force the insets to be recomputed on the next layout pass
         setNeedsLayout()
         if textChanged { jumpToTop() }
     }
 
     func setMirror(horizontal: Bool, vertical: Bool) {
-        let transform = CGAffineTransform(scaleX: horizontal ? -1 : 1, y: vertical ? -1 : 1)
-        if label.transform != transform {
-            label.transform = transform
+        // Applied to the whole view rather than to a content subview: a `UITextView` renders its
+        // own text, so there is no inner view left to flip on its own.
+        let wanted = CGAffineTransform(scaleX: horizontal ? -1 : 1, y: vertical ? -1 : 1)
+        if transform != wanted {
+            transform = wanted
         }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         guard bounds.width > 0 else { return }
-        guard bounds.width != lastLayoutWidth || bounds.height != lastLayoutHeight || label.bounds.width == 0 else { return }
-        lastLayoutWidth = bounds.width
-        lastLayoutHeight = bounds.height
+        guard bounds.width != lastInsetWidth || bounds.height != lastInsetHeight else { return }
+        lastInsetWidth = bounds.width
+        lastInsetHeight = bounds.height
 
         let horizontalInset = bounds.width * cachedInsetPercent / 100
-        let topInset: CGFloat = 12
-        let available = max(1, bounds.width - horizontalInset * 2)
-        let height = label.sizeThatFits(CGSize(width: available, height: .greatestFiniteMagnitude)).height
-        // `bounds` + `center` rather than `frame`: the label carries a mirroring transform for
-        // beam-splitter rigs, and `frame` is undefined for a transformed view.
-        label.bounds = CGRect(x: 0, y: 0, width: available, height: height)
-        label.center = CGPoint(x: horizontalInset + available / 2, y: topInset + height / 2)
-        // A viewport's worth of trailing space so the final line can scroll up to the reading
-        // guide instead of stopping dead at the bottom edge.
-        contentSize = CGSize(width: bounds.width, height: topInset + height + bounds.height * 0.85)
+        textContainerInset = UIEdgeInsets(
+            top: 12,
+            left: horizontalInset,
+            // A viewport's worth of trailing space so the final line can scroll up to the reading
+            // guide instead of stopping dead at the bottom edge.
+            bottom: bounds.height * 0.85,
+            right: horizontalInset
+        )
     }
 
     private var maxOffset: CGFloat {

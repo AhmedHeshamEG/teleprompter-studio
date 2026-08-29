@@ -19,6 +19,13 @@ struct StudioView: View {
     /// `PrompterControlsView` (sheet in portrait, popover in landscape).
     @State private var showingPrompterSliders = false
 
+    /// How much room the top bar and the bottom controls actually take, measured from the chrome
+    /// itself rather than guessed. Handed to `FloatingPrompterCard`, which confines the card to
+    /// what's left — otherwise the card can be dragged (or grow) underneath controls that are drawn
+    /// over it and eat the touch, which is exactly what happens in landscape, where the whole
+    /// screen is barely 400pt tall.
+    @State private var chromeInsets = PrompterChromeInsets()
+
     /// Landscape on iPhone: short screen, wide screen. Both the chrome layout and the prompter
     /// card's proportions key off this.
     private var isCompactHeight: Bool { verticalSizeClass == .compact }
@@ -36,7 +43,8 @@ struct StudioView: View {
                     CameraPreviewView(
                         cameraSession: viewModel.session,
                         onTap: { viewModel.focus(at: $0) },
-                        onPinch: { viewModel.setZoom(viewModel.session.currentZoom * $0) }
+                        onPinch: { viewModel.setZoom(viewModel.session.currentZoom * $0) },
+                        subjectRelay: viewModel.cinematicSubjectRelay
                     )
                     .ignoresSafeArea()
 
@@ -62,17 +70,30 @@ struct StudioView: View {
                     controller: viewModel.prompterController,
                     opacity: viewModel.overlayOpacity,
                     heightFraction: $viewModel.overlayHeightFraction,
-                    screenSize: screen.size
+                    screenSize: screen.size,
+                    chromeInsets: chromeInsets
                 )
 
                 VStack {
-                    topBar
-                    if let errorMessage = viewModel.errorMessage {
-                        cameraErrorBanner(errorMessage)
+                    VStack(spacing: 0) {
+                        topBar
+                        if let errorMessage = viewModel.errorMessage {
+                            cameraErrorBanner(errorMessage)
+                        }
                     }
+                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
+                        chromeInsets.top = height
+                    }
+
                     Spacer()
-                    StudioCinematicBadge(viewModel: viewModel)
-                    bottomChrome
+
+                    VStack(spacing: Theme.spacingS) {
+                        StudioCinematicBadge(viewModel: viewModel)
+                        bottomChrome
+                    }
+                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
+                        chromeInsets.bottom = height
+                    }
                 }
             }
         }
@@ -224,13 +245,21 @@ private struct StudioCinematicBadge: View {
     let viewModel: CameraStudioViewModel
 
     var body: some View {
-        switch viewModel.resolvedCinematicKind {
-        case .real:
-            Badge(text: "Cinematic", color: Theme.accent, filled: true)
-        case .synthetic:
-            Badge(text: "Simulated Cinematic", color: Theme.accent)
-        case .none:
-            EmptyView()
+        VStack(spacing: Theme.spacingXS) {
+            switch viewModel.resolvedCinematicKind {
+            case .real:
+                Badge(text: "Cinematic", color: Theme.accent, filled: true)
+                // The system's own scene assessment, the same "more light" warning the stock
+                // Camera app shows. Cinematic degrades badly in low light and says so; passing
+                // that on is more useful than letting the take look mysteriously mushy.
+                if let warning = viewModel.session.cinematicSceneWarning {
+                    Badge(text: warning, color: Theme.warning)
+                }
+            case .synthetic:
+                Badge(text: "Simulated Cinematic", color: Theme.accent)
+            case .none:
+                EmptyView()
+            }
         }
     }
 }

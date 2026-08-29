@@ -48,6 +48,9 @@ struct CompanionView: View {
     @State private var controller = PrompterController()
     @State private var monitorMode: CompanionMonitorMode = .full
     @State private var overlayHeightFraction: Double = 0.55
+    /// Measured height of this screen's own chrome, so the prompter card stays clear of it — the
+    /// Companion is a mirror of the Director's layout and inherits the same landscape squeeze.
+    @State private var chromeInsets = PrompterChromeInsets()
 
     /// How far the local scroll may drift from the Director's reported position before it's
     /// snapped back. The Companion scrolls under its own steam at the Director's speed and only
@@ -70,13 +73,16 @@ struct CompanionView: View {
                     controller: controller,
                     opacity: 0.92,
                     heightFraction: $overlayHeightFraction,
-                    screenSize: screen.size
+                    screenSize: screen.size,
+                    chromeInsets: chromeInsets
                 )
 
                 VStack {
                     topBar
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.top = $0 }
                     Spacer()
                     remoteControls
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.bottom = $0 }
                 }
             }
         }
