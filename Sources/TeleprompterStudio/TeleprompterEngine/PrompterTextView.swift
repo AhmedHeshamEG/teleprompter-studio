@@ -135,11 +135,13 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
         decelerationRate = .normal
         isEditable = false
         isSelectable = false            // a prompter is read, not selected; also kills the magnifier
-        textContainer.lineFragmentPadding = 0
-        textContainer.lineBreakMode = .byWordWrapping
+        // `self.` because the initializer's own `textContainer` parameter shadows the property,
+        // and it's the view's resolved (non-optional) container that needs configuring.
+        self.textContainer.lineFragmentPadding = 0
+        self.textContainer.lineBreakMode = .byWordWrapping
         // The prompter never scrolls sideways: without this a long unbroken word (a URL, say)
         // would widen the content instead of wrapping.
-        textContainer.widthTracksTextView = true
+        self.textContainer.widthTracksTextView = true
         delegate = self
     }
 
