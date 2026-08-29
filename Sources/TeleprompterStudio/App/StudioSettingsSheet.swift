@@ -89,7 +89,10 @@ struct StudioSettingsSheet: View {
                                     get: { viewModel.cinematicAperture },
                                     set: { viewModel.setCinematicAperture($0) }
                                 ),
-                                range: 2...16
+                                // The range the *active Cinematic format* actually renders across,
+                                // asked of the system rather than assumed: a value outside it is
+                                // rejected, which would leave the slider moving and the image not.
+                                range: viewModel.cinematicApertureRange
                             ) { String(format: "f/%.1f", $0) }
                         } else {
                             LabeledSlider(
