@@ -32,7 +32,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TeleprompterStudio-ipa
+          # `xtool/` only: a `**/*.ipa` glob also picks up the .ipa tracked at the repo root, so
+          # the artifact contained the *previous* release alongside the fresh build, with nothing
+          # to tell them apart but their size.
           path: |
-            **/*.ipa
+            xtool/*.ipa
           if-no-files-found: error
           retention-days: 14
