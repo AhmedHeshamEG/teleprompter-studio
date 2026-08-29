@@ -30,7 +30,7 @@ final class CameraStudioViewModel {
     /// Live Cinematic subject metadata, shared between the preview overlay (which draws the
     /// system's detected subjects) and `realCinematic` (which matches a tap to one of them).
     let cinematicSubjectRelay = CinematicSubjectRelay()
-    private lazy var cinematicSubjectObserver = CinematicSubjectObserver(relay: cinematicSubjectRelay)
+    private let cinematicSubjectObserver = CinematicSubjectObserver()
 
     var runMode: StudioRunMode = .record
     var cinematicMode: CinematicMode = .off
@@ -124,6 +124,7 @@ final class CameraStudioViewModel {
         // Subject detection for Apple's Cinematic path. The output it feeds is only attached to
         // the session while hardware Cinematic is actually running, so this costs nothing the rest
         // of the time.
+        cinematicSubjectObserver.relay = cinematicSubjectRelay
         session.cinematicMetadataDelegate = cinematicSubjectObserver
         cinematicSubjectRelay.onSubjects = { [weak self] subjects in
             self?.realCinematic.updateDetectedSubjects(subjects)

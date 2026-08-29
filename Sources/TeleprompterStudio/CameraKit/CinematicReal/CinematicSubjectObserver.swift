@@ -27,16 +27,15 @@ final class CinematicSubjectRelay {
 /// delegate is called on a background capture queue and the view model is `@MainActor` — this is
 /// where the thread hop belongs.
 final class CinematicSubjectObserver: NSObject, AVCaptureMetadataOutputObjectsDelegate {
-    private let relay: CinematicSubjectRelay
+    /// Settable rather than injected at init: the view model that owns both this observer and the
+    /// relay is `@Observable`, and an `@Observable` class can't have a `lazy` stored property to
+    /// build one from the other.
+    var relay: CinematicSubjectRelay?
     /// Subject detection reports at the capture frame rate. Ten updates a second is well past what
     /// the eye reads as "the box follows me", and it keeps the main thread out of it the rest of
     /// the time.
     private var lastDelivery: CFTimeInterval = 0
     private let minimumInterval: CFTimeInterval = 0.1
-
-    init(relay: CinematicSubjectRelay) {
-        self.relay = relay
-    }
 
     func metadataOutput(
         _ output: AVCaptureMetadataOutput,
@@ -58,9 +57,9 @@ final class CinematicSubjectObserver: NSObject, AVCaptureMetadataOutputObjectsDe
             )
         }
 
-        DispatchQueue.main.async { [relay] in
-            relay.onRawObjects?(metadataObjects)
-            relay.onSubjects?(subjects)
+        DispatchQueue.main.async { [weak self] in
+            self?.relay?.onRawObjects?(metadataObjects)
+            self?.relay?.onSubjects?(subjects)
         }
     }
 }
