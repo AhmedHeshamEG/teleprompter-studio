@@ -185,6 +185,35 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// changes underneath it (resolution changes, camera flips).
     private var wantsCinematic = false
 
+    /// Why the hardware Cinematic path isn't running, when it was asked for and didn't engage.
+    /// Published so the UI can say *which* wall it hit instead of silently showing the simulated
+    /// badge and leaving the user to guess whether their phone can do this at all.
+    private(set) var cinematicUnavailableReason: String?
+
+    /// The system's own scene assessment while Cinematic runs — non-nil when it wants more light,
+    /// the same warning the stock Camera app puts on screen. Sampled on the session queue while
+    /// the effect is active (one property read, a couple of times a second).
+    private(set) var cinematicSceneWarning: String?
+
+    /// Subject metadata output, attached **only** while hardware Cinematic is running. Cinematic
+    /// needs the session to publish the subject types it names in
+    /// `requiredMetadataObjectTypesForCinematicVideoCapture` — without them the system has no
+    /// tracked subjects, so there is nothing to rack focus between and no rectangles to draw.
+    let metadataOutput = AVCaptureMetadataOutput()
+    private var metadataOutputAttached = false
+
+    /// Receives detected-subject metadata while Cinematic is on. Set by `CameraStudioViewModel`.
+    weak var cinematicMetadataDelegate: AVCaptureMetadataOutputObjectsDelegate?
+
+    /// `AVCaptureDevice.CinematicVideoFocusMode` raw value used for taps: 1 = strong (hold this
+    /// subject), 2 = weak (let the algorithm keep control). Set from Studio Settings.
+    var cinematicFocusModeRawValue: Int = 1
+
+    private var sceneMonitorTimer: DispatchSourceTimer?
+
+    /// Last aperture the user asked for, re-applied whenever Cinematic (re-)engages.
+    private var requestedAperture: Double = 2.8
+
     /// Last requested capture settings, so Cinematic format selection and a later
     /// `applyResolution` agree about what the user asked for.
     private var lastResolution: CaptureResolution = .hd1080
@@ -216,6 +245,11 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         // Remove any prior inputs/outputs (used when toggling facing).
         for input in captureSession.inputs { captureSession.removeInput(input) }
         for output in captureSession.outputs { captureSession.removeOutput(output) }
+        // The metadata output went with them, so the bookkeeping has to agree — otherwise a
+        // camera flip leaves Cinematic believing it still has a subject-detection output attached
+        // and quietly loses subject tracking for the rest of the session.
+        metadataOutputAttached = false
+        stopSceneMonitoring()
 
         guard let videoDevice = Self.device(for: facing) else {
             throw CameraSessionError.noDeviceAvailable
@@ -274,22 +308,156 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// format allows — those constraints are the system's, and overriding them is what makes the
     /// flag get quietly refused.
     private func applyCinematicSync(_ enabled: Bool, device: AVCaptureDevice, input: AVCaptureDeviceInput) {
-        if enabled {
-            if let format = CinematicVideoSupport.bestFormat(for: device, resolution: lastResolution, fps: 30),
-               device.activeFormat != format {
-                if (try? device.lockForConfiguration()) != nil {
-                    device.activeFormat = format
-                    device.unlockForConfiguration()
-                }
+        guard enabled else {
+            CinematicVideoSupport.setEnabled(false, on: input)
+            detachMetadataOutputSync()
+            stopSceneMonitoring()
+            DispatchQueue.main.async {
+                self.isCinematicActive = false
+                self.cinematicUnavailableReason = nil
+                self.cinematicSceneWarning = nil
             }
+            return
         }
-        let accepted = CinematicVideoSupport.setEnabled(enabled, on: input)
-        let active = enabled && accepted
-        DispatchQueue.main.async { self.isCinematicActive = active }
-        if enabled && !accepted {
+
+        guard CinematicVideoSupport.isAvailableOnThisOS else {
+            failCinematic("Cinematic capture needs iOS 26 or later. Using the simulated effect instead.")
+            return
+        }
+        guard let format = CinematicVideoSupport.bestFormat(for: device, resolution: lastResolution, fps: 30) else {
+            failCinematic("This camera has no Cinematic-capable format. Using the simulated effect instead.")
+            return
+        }
+        if device.activeFormat != format {
+            guard (try? device.lockForConfiguration()) != nil else {
+                failCinematic("The camera was busy and wouldn't switch to a Cinematic format.")
+                return
+            }
+            device.activeFormat = format
+            device.unlockForConfiguration()
+        }
+
+        let accepted = CinematicVideoSupport.setEnabled(true, on: input)
+        guard accepted else {
             // Leave the session in a clean non-Cinematic state rather than half-configured.
             CinematicVideoSupport.setEnabled(false, on: input)
+            failCinematic("The system declined Cinematic capture for this camera configuration.")
+            return
         }
+
+        // Order matters: the required metadata types are only meaningful once Cinematic is on.
+        attachMetadataOutputSync()
+        if let connection = movieFileOutput.connection(with: .video) {
+            CinematicVideoSupport.applyCinematicStabilization(to: connection, device: device)
+        }
+        CinematicVideoSupport.setSimulatedAperture(Float(requestedAperture), on: input)
+        startSceneMonitoring(device: device)
+
+        DispatchQueue.main.async {
+            self.isCinematicActive = true
+            self.cinematicUnavailableReason = nil
+        }
+    }
+
+    /// Records why the hardware path didn't engage and leaves `isCinematicActive` false, which is
+    /// what makes `CameraStudioViewModel` fall back to the synthetic pipeline.
+    private func failCinematic(_ reason: String) {
+        DispatchQueue.main.async {
+            self.isCinematicActive = false
+            self.cinematicUnavailableReason = reason
+        }
+    }
+
+    /// Adds the subject-metadata output Cinematic needs and asks the system which object types it
+    /// requires. Must run on `sessionQueue`; the caller owns the configuration transaction.
+    private func attachMetadataOutputSync() {
+        if !metadataOutputAttached {
+            guard captureSession.canAddOutput(metadataOutput) else { return }
+            captureSession.addOutput(metadataOutput)
+            metadataOutputAttached = true
+        }
+        metadataOutput.setMetadataObjectsDelegate(cinematicMetadataDelegate, queue: dataOutputQueue)
+        if let types = CinematicVideoSupport.requiredMetadataObjectTypes(for: metadataOutput) {
+            // Intersected with what this session will actually vend: assigning a type the output
+            // doesn't list as available raises, and the required set is the system's ideal rather
+            // than a promise about this particular configuration.
+            let available = Set(metadataOutput.availableMetadataObjectTypes)
+            let usable = types.filter { available.contains($0) }
+            if !usable.isEmpty { metadataOutput.metadataObjectTypes = usable }
+        }
+    }
+
+    private func detachMetadataOutputSync() {
+        guard metadataOutputAttached else { return }
+        metadataOutput.setMetadataObjectsDelegate(nil, queue: nil)
+        captureSession.removeOutput(metadataOutput)
+        metadataOutputAttached = false
+    }
+
+    /// Polls the system's Cinematic scene assessment (currently only "not enough light") while the
+    /// effect runs. One property read every 1.5s on the session queue — cheap enough to be honest
+    /// with, and it stops the moment Cinematic does.
+    private func startSceneMonitoring(device: AVCaptureDevice) {
+        stopSceneMonitoring()
+        let timer = DispatchSource.makeTimerSource(queue: sessionQueue)
+        timer.schedule(deadline: .now() + 1.5, repeating: 1.5)
+        timer.setEventHandler { [weak self, weak device] in
+            guard let self, let device else { return }
+            let statuses = CinematicVideoSupport.sceneMonitoringStatuses(for: device)
+            let needsLight = statuses.contains { $0.lowercased().contains("light") }
+            let warning = needsLight ? "More light needed for a clean Cinematic effect." : nil
+            DispatchQueue.main.async {
+                if self.cinematicSceneWarning != warning { self.cinematicSceneWarning = warning }
+            }
+        }
+        timer.resume()
+        sceneMonitorTimer = timer
+    }
+
+    private func stopSceneMonitoring() {
+        sceneMonitorTimer?.cancel()
+        sceneMonitorTimer = nil
+    }
+
+    /// Racks focus the Cinematic way: the system finds a subject at `devicePoint`, starts tracking
+    /// it, and pulls focus onto it with the configured focus style. Returns `false` when the
+    /// hardware path isn't running or the OS has no such control, so the caller can fall back to
+    /// ordinary autofocus rather than appearing to do nothing.
+    @discardableResult
+    func setCinematicFocus(at devicePoint: CGPoint) -> Bool {
+        guard isCinematicActive, CinematicVideoSupport.isFocusControlAvailable else { return false }
+        // Applied on the session queue like every other device mutation. Deliberately not
+        // `sync`: this is called straight from a tap on the preview, and blocking the main thread
+        // behind a session that may be mid-reconfiguration is how a camera UI drops frames.
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+            CinematicVideoSupport.setTrackingFocus(
+                at: devicePoint,
+                focusMode: self.cinematicFocusModeRawValue,
+                on: device
+            )
+            device.unlockForConfiguration()
+        }
+        return true
+    }
+
+    /// Racks focus onto a subject the system already reported in its metadata — tapping one of the
+    /// detected-subject rectangles, rather than a bare point.
+    @discardableResult
+    func setCinematicFocus(detectedObjectID objectID: Int) -> Bool {
+        guard isCinematicActive, CinematicVideoSupport.isFocusControlAvailable else { return false }
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            guard (try? device.lockForConfiguration()) != nil else { return }
+            CinematicVideoSupport.setTrackingFocus(
+                detectedObjectID: objectID,
+                focusMode: self.cinematicFocusModeRawValue,
+                on: device
+            )
+            device.unlockForConfiguration()
+        }
+        return true
     }
 
     /// Attaches/detaches the raw-frame outputs on the fly. Called by `CameraStudioViewModel` when
@@ -404,6 +572,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     }
 
     func stop() {
+        stopSceneMonitoring()
         sessionQueue.async { [weak self] in
             guard let self, self.captureSession.isRunning else { return }
             self.captureSession.stopRunning()
@@ -580,14 +749,24 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     }
 
     /// The system's simulated aperture (f-number) for Cinematic capture — lower is shallower.
-    /// No-op when Cinematic isn't running.
+    /// Remembered even when Cinematic isn't running, so the value the user picked is re-applied
+    /// the next time the effect engages (after a camera flip or a resolution change) instead of
+    /// silently reverting to the system default.
     func setCinematicAperture(_ fNumber: Float) {
+        requestedAperture = Double(fNumber)
         sessionQueue.async { [weak self] in
             guard let self, let input = self.videoDeviceInput, self.isCinematicActive else { return }
             self.captureSession.beginConfiguration()
             CinematicVideoSupport.setSimulatedAperture(fNumber, on: input)
             self.captureSession.commitConfiguration()
         }
+    }
+
+    /// The f-stop range the active Cinematic format actually renders across, for the UI slider.
+    /// `nil` when Cinematic isn't running or the OS doesn't publish a range.
+    var cinematicApertureRange: (min: Float, max: Float, default: Float)? {
+        guard let device = videoDeviceInput?.device else { return nil }
+        return CinematicVideoSupport.apertureRange(for: device.activeFormat)
     }
 
     private static func device(for facing: CameraFacing) -> AVCaptureDevice? {

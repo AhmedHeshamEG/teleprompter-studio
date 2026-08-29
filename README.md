@@ -10,14 +10,20 @@ for the full story of how that worked and the tradeoffs it forced.
 
 ## Features
 
-- **Rich-text teleprompter** rendered in a `WKWebView` for pixel-identical, GPU-smooth scrolling —
-  supports bold/italic/underline/color/highlight and LaTeX math via bundled, offline [KaTeX](https://katex.org)
-  (no CDN, no network dependency).
+- **Native teleprompter** — a TextKit-backed `UITextView` scrolled by a `CADisplayLink`, so playback
+  is GPU-smooth, costs no SwiftUI re-render per frame, and renders correctly at any font size on a
+  script of any length (a `UILabel` can't: past the GPU's maximum texture height it silently draws
+  nothing). Scripts are authored with bold/italic/underline/color/highlight and LaTeX math via
+  bundled, offline [KaTeX](https://katex.org) (no CDN, no network dependency).
 - **Two run modes**: *Record* (the app is the camera and records the take) or *Prompt-only* (just the
   reader, for filming with a separate camera/app).
 - **Real Cinematic capture** on supported hardware (iPhone 13+, iOS 26+) via `AVCaptureDeviceInput`'s
-  Cinematic Video API, reached safely at runtime via selector/KVC probing so the project still builds on
-  SDKs that don't expose those symbols yet.
+  Cinematic Video API — including the system's own subject detection (tracked subjects are drawn over
+  the preview), **tap-to-rack-focus** with strong/weak focus styles, the format's real simulated-aperture
+  range, Cinematic Extended Enhanced stabilization, and the system's "more light needed" scene warning.
+  The API is reached at runtime through the Objective-C runtime (selectors discovered by scanning the
+  class method lists, not by guessing names), so the project still builds on SDKs that don't expose
+  those symbols yet, and reports *why* it fell back when the hardware path can't engage.
 - **Synthetic cinematic fallback** everywhere else: live Vision person segmentation + Core Image
   background blur, composited frame-by-frame and recorded with `AVAssetWriter`.
 - **Director/Companion sync** — mirror the prompter and a live camera preview to a second iPhone/iPad over

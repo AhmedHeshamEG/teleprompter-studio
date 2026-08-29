@@ -13,6 +13,10 @@ enum Theme {
     static let accent = Color(red: 1.0, green: 0.549, blue: 0.102)            // #FF8C1A amber
     static let record = Color(red: 0.95, green: 0.20, blue: 0.20)             // recording red
     static let success = Color(red: 0.30, green: 0.85, blue: 0.55)
+    /// Advisory, not failure: a condition the shot can still be taken under (the system asking for
+    /// more light during a Cinematic take, say). Distinct from `accent` so a warning doesn't read
+    /// as just another piece of chrome.
+    static let warning = Color(red: 1.0, green: 0.78, blue: 0.30)
 
     static let textPrimary = Color.white
     static let textSecondary = Color.white.opacity(0.62)
