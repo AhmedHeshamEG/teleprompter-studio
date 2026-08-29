@@ -41,7 +41,7 @@ struct PrompterTextView: UIViewRepresentable {
     var onJumpConsumed: () -> Void
 
     func makeUIView(context: Context) -> PrompterScrollView {
-        let view = PrompterScrollView(frame: .zero)
+        let view = PrompterScrollView(frame: .zero, textContainer: nil)
         view.onProgress = onProgress
         view.onFinished = onFinished
         context.coordinator.lastJumpToTopToken = jumpToTopToken
@@ -120,11 +120,12 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
 
     private(set) var isPlaying = false
 
-    override init(frame: CGRect) {
-        // TextKit 2 (the default for a plain `UITextView` on iOS 16+) lays out and renders only
-        // the visible viewport, which is precisely the property this view needs. Passing a `nil`
-        // text container is what asks for that default rather than a hand-built TextKit 1 stack.
-        super.init(frame: frame, textContainer: nil)
+    /// `init(frame:textContainer:)` is `UITextView`'s *designated* initializer — `init(frame:)`
+    /// is not, and can't be overridden. Callers pass a `nil` container, which is what asks for the
+    /// default TextKit 2 stack (the one that lays out and renders only the visible viewport, which
+    /// is precisely the property this view needs) rather than a hand-built TextKit 1 one.
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
         backgroundColor = .clear
         showsVerticalScrollIndicator = false
         showsHorizontalScrollIndicator = false
