@@ -23,6 +23,7 @@ struct NativePrompterView: View {
         ZStack(alignment: .top) {
             PrompterTextView(
                 text: plainText,
+                fontName: document.fontName,
                 fontSize: controller.fontSize,
                 lineHeight: document.lineHeight,
                 textColor: UIColor(HexColor.color(document.textColorHex)),

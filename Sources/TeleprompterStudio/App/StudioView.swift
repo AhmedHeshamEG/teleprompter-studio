@@ -26,6 +26,14 @@ struct StudioView: View {
     /// screen is barely 400pt tall.
     @State private var chromeInsets = PrompterChromeInsets()
 
+    /// Everything except the script, the transport, the timer and the record button can be swept
+    /// off the screen with one button. On a 390pt-tall landscape screen that is the difference
+    /// between a prompter and a two-word slot, and it's also the only reliable way to see the
+    /// frame you're actually recording.
+    @State private var chromeVisible = true
+    /// Bumped by Studio Settings' "Reset Card" to put the prompter card back where it started.
+    @State private var resetCardToken = 0
+
     /// Landscape on iPhone: short screen, wide screen. Both the chrome layout and the prompter
     /// card's proportions key off this.
     private var isCompactHeight: Bool { verticalSizeClass == .compact }
@@ -71,31 +79,20 @@ struct StudioView: View {
                     opacity: viewModel.overlayOpacity,
                     heightFraction: $viewModel.overlayHeightFraction,
                     screenSize: screen.size,
-                    chromeInsets: chromeInsets
+                    chromeInsets: chromeInsets,
+                    showsHandles: chromeVisible,
+                    resetToken: resetCardToken
                 )
 
-                VStack {
-                    VStack(spacing: 0) {
-                        topBar
-                        if let errorMessage = viewModel.errorMessage {
-                            cameraErrorBanner(errorMessage)
-                        }
-                    }
-                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
-                        chromeInsets.top = height
-                    }
-
-                    Spacer()
-
-                    VStack(spacing: Theme.spacingS) {
-                        StudioCinematicBadge(viewModel: viewModel)
-                        bottomChrome
-                    }
-                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
-                        chromeInsets.bottom = height
-                    }
+                if isCompactHeight {
+                    landscapeChrome
+                } else {
+                    portraitChrome
                 }
+
+                chromeToggle
             }
+            .animation(Theme.quickSpring, value: chromeVisible)
         }
         .statusBarHidden()
         .task {
@@ -118,7 +115,7 @@ struct StudioView: View {
             Text("Enable camera and microphone access in Settings to use Studio.")
         }
         .sheet(isPresented: $showingSettingsSheet) {
-            StudioSettingsSheet(viewModel: viewModel)
+            StudioSettingsSheet(viewModel: viewModel) { resetCardToken += 1 }
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showingPeerSheet) {
@@ -128,6 +125,148 @@ struct StudioView: View {
         // request itself — otherwise a Companion can never be accepted mid-session.
         .peerInviteAlert(coordinator: appState.syncCoordinator)
         .preferredColorScheme(.dark)
+    }
+
+    /// Portrait: the familiar stacked layout — bar across the top, transport and capture controls
+    /// across the bottom. There is height to spare here, so nothing has to move.
+    private var portraitChrome: some View {
+        VStack {
+            VStack(spacing: 0) {
+                if chromeVisible {
+                    topBar
+                } else {
+                    // The one thing from the top bar that stays: how long this take has been
+                    // running. Hiding the controls shouldn't hide the clock.
+                    HStack {
+                        Spacer()
+                        StudioRecordingIndicator(coordinator: viewModel.recordingCoordinator)
+                        Spacer()
+                        // Room for the floating hide/show button in the corner.
+                        Color.clear.frame(width: 48, height: 44)
+                    }
+                    .padding(.horizontal, Theme.spacingM)
+                }
+                if let errorMessage = viewModel.errorMessage {
+                    cameraErrorBanner(errorMessage)
+                }
+            }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
+                chromeInsets.top = height
+            }
+
+            Spacer()
+
+            VStack(spacing: Theme.spacingS) {
+                if chromeVisible { StudioCinematicBadge(viewModel: viewModel) }
+                bottomChrome
+            }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { height in
+                chromeInsets.bottom = height
+            }
+        }
+    }
+
+    /// Landscape: the controls move to **side rails**, and the only thing left crossing the screen
+    /// horizontally is a 44pt transport row.
+    ///
+    /// The previous layout kept the portrait bands — a top bar and a two-or-one-row control block
+    /// — which together took roughly 270 of a landscape iPhone's ~390 points of height. Whatever
+    /// was left is what the script had to fit in, which is why it came out as one or two words.
+    /// Height is the scarce dimension in landscape and width is the plentiful one, so the chrome
+    /// now spends width instead: exactly what the system camera does when it rotates.
+    private var landscapeChrome: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                HStack(spacing: Theme.spacingM) {
+                    if chromeVisible {
+                        modePicker
+                        StudioCinematicBadge(viewModel: viewModel)
+                    }
+                    // Always on, hidden chrome or not — see the portrait branch.
+                    StudioRecordingIndicator(coordinator: viewModel.recordingCoordinator)
+                }
+                if let errorMessage = viewModel.errorMessage {
+                    cameraErrorBanner(errorMessage)
+                }
+            }
+            .padding(.top, Theme.spacingS)
+            // Measured on the content itself: read after `.frame(maxHeight: .infinity)` this
+            // reports the whole screen's height, and the card would be handed a top inset that
+            // leaves it nowhere at all to sit.
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.top = $0 }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+            HStack(spacing: 0) {
+                VStack(spacing: Theme.spacingM) {
+                    if chromeVisible {
+                        ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
+                        rotationButton
+                        StudioPeerButton(coordinator: appState.syncCoordinator) { showingPeerSheet = true }
+                        ChromeButton(systemImage: "slider.horizontal.3", size: Theme.minControlSizeCompact) {
+                            showingSettingsSheet = true
+                        }
+                    }
+                }
+                .padding(.leading, Theme.spacingS)
+                .onGeometryChange(for: CGFloat.self, of: \.size.width) { chromeInsets.leading = $0 + Theme.spacingS }
+
+                Spacer(minLength: 0)
+
+                VStack(spacing: Theme.spacingM) {
+                    captureControls
+                }
+                .padding(.trailing, Theme.spacingS)
+                .onGeometryChange(for: CGFloat.self, of: \.size.width) { chromeInsets.trailing = $0 + Theme.spacingS }
+            }
+
+            PrompterControlsView(
+                controller: viewModel.prompterController,
+                showingSliders: $showingPrompterSliders
+            )
+            // Clear of both rails, so the progress bar can be dragged end to end.
+            .padding(.horizontal, Theme.spacingXL * 2)
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.bottom = $0 }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    /// One button that sweeps the chrome off the screen and brings it back — the cheap, effective
+    /// version of "get out of my way" the whole floating-prompter problem was really asking for.
+    /// Amber while the chrome is hidden, so the state is legible at a glance mid-take.
+    private var chromeToggle: some View {
+        VStack {
+            HStack {
+                Spacer()
+                ChromeButton(
+                    systemImage: chromeVisible
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right",
+                    isActive: !chromeVisible,
+                    size: Theme.minControlSizeCompact
+                ) {
+                    chromeVisible.toggle()
+                }
+                .accessibilityLabel(chromeVisible ? "Hide controls" : "Show controls")
+            }
+            Spacer()
+        }
+        .padding(.trailing, Theme.spacingM)
+        .padding(.top, isCompactHeight ? Theme.spacingS : Theme.spacingM)
+    }
+
+    private var modePicker: some View {
+        Picker("Mode", selection: $viewModel.runMode) {
+            ForEach(StudioRunMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 240)
+    }
+
+    /// Auto → Portrait → Landscape, on screen instead of three taps deep in the settings sheet.
+    /// Rotation is a thing you decide *while* mounting the phone, which is the one moment you
+    /// can't be opening sheets.
+    private var rotationButton: some View {
+        StudioRotationButton()
     }
 
     /// Camera-side failures used to fail silently (see `CameraStudioViewModel.start()`), which
@@ -147,59 +286,44 @@ struct StudioView: View {
     }
 
     private var topBar: some View {
-        HStack {
-            ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
+        VStack(spacing: Theme.spacingS) {
+            HStack {
+                ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
 
-            Picker("Mode", selection: $viewModel.runMode) {
-                ForEach(StudioRunMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                Spacer()
+
+                StudioRecordingIndicator(coordinator: viewModel.recordingCoordinator)
+
+                rotationButton
+
+                // Own view: it reads the coordinator's peer list, which changes independently of
+                // everything else on this screen.
+                StudioPeerButton(coordinator: appState.syncCoordinator) { showingPeerSheet = true }
+                ChromeButton(systemImage: "slider.horizontal.3", size: Theme.minControlSizeCompact) {
+                    showingSettingsSheet = true
+                }
+                // The hide/show button sits in this corner as a floating overlay, so the row keeps
+                // its place clear rather than shuffling sideways when the chrome comes back.
+                Color.clear.frame(width: 48, height: 1)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 240)
-
-            Spacer()
-
-            StudioRecordingIndicator(coordinator: viewModel.recordingCoordinator)
-
-            // Own view: it reads the coordinator's peer list, which changes independently of
-            // everything else on this screen.
-            StudioPeerButton(coordinator: appState.syncCoordinator) { showingPeerSheet = true }
-            ChromeButton(systemImage: "slider.horizontal.3", size: Theme.minControlSizeCompact) {
-                showingSettingsSheet = true
-            }
+            modePicker
         }
         .padding(Theme.spacingM)
     }
 
-    /// Portrait stacks the prompter transport above the capture controls. Landscape puts them side
-    /// by side: two stacked rows ate roughly a third of a landscape screen's height, pushing the
-    /// script and the frame into what was left. Same controls, same sizes, laid out for the space
-    /// that actually exists — which is what the system's own camera chrome does when it rotates.
+    /// The portrait bottom block: prompter transport above the capture controls. (Landscape has no
+    /// bottom block — see `landscapeChrome`.)
     private var bottomChrome: some View {
-        Group {
-            if isCompactHeight {
-                HStack(alignment: .center, spacing: Theme.spacingL) {
-                    PrompterControlsView(
-                        controller: viewModel.prompterController,
-                        showingSliders: $showingPrompterSliders
-                    )
-                    .frame(maxWidth: .infinity)
-
-                    captureControls
-                }
-                .padding(.horizontal, Theme.spacingM)
-            } else {
-                // Deliberate gap between the transport row and the record row — they were close
-                // enough that a thumb aimed at one could catch the other.
-                VStack(spacing: Theme.spacingM) {
-                    PrompterControlsView(
-                        controller: viewModel.prompterController,
-                        showingSliders: $showingPrompterSliders
-                    )
-                    captureControls
-                }
-            }
+        // Deliberate gap between the transport row and the record row — they were close enough
+        // that a thumb aimed at one could catch the other.
+        VStack(spacing: Theme.spacingM) {
+            PrompterControlsView(
+                controller: viewModel.prompterController,
+                showingSliders: $showingPrompterSliders
+            )
+            captureControls
         }
-        .padding(.bottom, isCompactHeight ? Theme.spacingS : Theme.spacingM)
+        .padding(.bottom, Theme.spacingM)
     }
 
     /// Each button that reads a *changing* value reads it inside its own small view. Read here, a
@@ -208,17 +332,20 @@ struct StudioView: View {
     /// underneath a finger drops the press that was in flight. That is what "I have to tap it
     /// several times" is made of.
     private var captureControls: some View {
-        HStack(spacing: Theme.spacingL) {
-            if viewModel.runMode == .record {
+        // A row across the bottom in portrait, a column down the right-hand rail in landscape —
+        // same controls, same sizes, laid out for the space that actually exists.
+        AxisStack(isVertical: isCompactHeight, spacing: Theme.spacingL) {
+            if viewModel.runMode == .record, chromeVisible {
                 ChromeButton(systemImage: "arrow.triangle.2.circlepath.camera", size: Theme.minControlSizeCompact) {
                     viewModel.toggleFacing()
                 }
                 StudioCinematicButton(viewModel: viewModel)
             }
 
+            // Never hidden: whatever else goes away, the take has to be startable and stoppable.
             StudioRecordButton(viewModel: viewModel)
 
-            if viewModel.runMode == .record {
+            if viewModel.runMode == .record, chromeVisible {
                 // The framing grid lives in Studio Settings now (and is on by default) — it's
                 // a set-once framing preference, not something worth a permanent slot in the
                 // thumb-reachable chrome next to the record button.
@@ -246,6 +373,11 @@ private struct StudioCinematicBadge: View {
 
     var body: some View {
         VStack(spacing: Theme.spacingXS) {
+            // A camera that can't do what Settings says it's doing is worth one line on screen —
+            // finding out from the file afterwards is finding out too late.
+            if let note = viewModel.captureFallbackNote {
+                Badge(text: note, color: Theme.warning)
+            }
             switch viewModel.resolvedCinematicKind {
             case .real:
                 Badge(text: "Cinematic", color: Theme.accent, filled: true)
@@ -369,5 +501,40 @@ private struct RecordButton: View {
                 withAnimation(.default) { pulse = false }
             }
         }
+    }
+}
+
+/// Lays its content out in a row or a column from one flag, so the capture controls can be a
+/// bottom row in portrait and a right-hand rail in landscape without being written twice.
+private struct AxisStack<Content: View>: View {
+    let isVertical: Bool
+    var spacing: CGFloat
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        if isVertical {
+            VStack(spacing: spacing) { content }
+        } else {
+            HStack(spacing: spacing) { content }
+        }
+    }
+}
+
+/// Auto → Portrait → Landscape, one tap at a time.
+///
+/// Its own view because it reads `OrientationController.shared`, which changes independently of
+/// everything else on the Studio screen — read in `StudioView.body` it would invalidate the camera
+/// preview and the prompter card every time the phone was turned.
+private struct StudioRotationButton: View {
+    var body: some View {
+        let lock = OrientationController.shared.lock
+        ChromeButton(
+            systemImage: lock.systemImage,
+            isActive: lock != .auto,
+            size: Theme.minControlSizeCompact
+        ) {
+            OrientationController.shared.lock = lock.next
+        }
+        .accessibilityLabel("Rotation: \(lock.rawValue)")
     }
 }

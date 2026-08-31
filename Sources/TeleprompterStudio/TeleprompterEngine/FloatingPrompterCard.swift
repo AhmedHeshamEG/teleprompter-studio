@@ -1,20 +1,23 @@
 import SwiftUI
+import UIKit
 
 /// The scrolling script as a floating, hand-placeable card: drag the top handle to move it, the
-/// bottom-right grip to resize it, and the script itself to nudge the reading position mid-take.
+/// bottom-right grip (or a two-finger pinch) to resize it, and the script itself to nudge the
+/// reading position mid-take.
 ///
-/// Lives in its own view for two reasons.
+/// **Moving it is UIKit, not SwiftUI.** The position and size used to live in `@State` and be
+/// applied with `.offset`/`.position`, so every frame of a drag re-evaluated this view — which
+/// re-runs `NativePrompterView`, which re-runs the prompter `UIViewRepresentable`'s update pass,
+/// which re-reads the whole document — sixty times a second. That is the drag lag: the card is
+/// chasing a view tree that is being rebuilt underneath it. Now a `PrompterCardCanvas` owns the
+/// gestures and moves a plain `UIView`'s frame directly on the render server, and SwiftUI hears
+/// about the result exactly once, when the finger lifts.
 ///
-/// **It's shared.** Studio (Director) and the Companion screen show the same card over the same
-/// full-bleed camera image, so the second device is a real mirror of the first rather than a
-/// different-looking screen with a thumbnail in the corner.
-///
-/// **Dragging it used to rebuild the entire screen.** The position, size and drag state lived on
-/// `StudioView`, so every frame of a drag re-evaluated the whole Studio body — camera preview
-/// representable, cinematic overlay, grid, every piece of chrome — 60 times a second. That's the
-/// stutter you feel when moving the card by its handle. Owning that state here confines each drag
-/// frame to this subtree, and the live drag itself is a plain `.offset` that isn't committed to the
-/// stored position (or clamped) until the finger lifts.
+/// **The card is confined to the screen, not to the chrome.** Clamping it into the gap the
+/// controls left is what squeezed it to a two-word slot in landscape, where the old top/bottom
+/// bars ate ~270 of ~390 points. The chrome insets now only decide where the card *starts*; after
+/// that it goes wherever it's put, and the chrome itself gets out of the way (side rails in
+/// landscape, and the hide button in `StudioView` clears it entirely).
 struct FloatingPrompterCard: View {
     var document: PrompterDocument
     var controller: PrompterController
@@ -23,204 +26,438 @@ struct FloatingPrompterCard: View {
     /// same value from a slider, and the two controls have to agree.
     @Binding var heightFraction: Double
     let screenSize: CGSize
-    /// Screen space the surrounding chrome occupies, in points. The card is confined to what's
-    /// left: it can be dragged and resized anywhere in that region and nowhere outside it.
-    ///
-    /// Without this the card was clamped to the *whole* screen while the top bar and the transport
-    /// / capture controls were drawn on top of it — so in landscape, where the controls sit in a
-    /// single wide row and the screen is only ~390pt tall to begin with, the bottom of the card
-    /// (and often its resize grip, and in a tall card its drag handle) ended up underneath chrome
-    /// that swallows the touch. The card was there; it just couldn't be grabbed.
+    /// Screen space the surrounding chrome occupies, in points — used to place the card sensibly
+    /// on first appearance and on rotation, never to restrict where it may be dragged.
     var chromeInsets: PrompterChromeInsets = .zero
+    /// While chrome is hidden the handle and grip go with it: the card is where you put it, and a
+    /// stray thumb on the way to the record button can't nudge the script out of frame mid-take.
+    var showsHandles: Bool = true
+    /// Bumped by "Reset Card" in Studio Settings — the one way back from a card dragged somewhere
+    /// unhelpful.
+    var resetToken: Int = 0
 
-    @State private var positionFraction = CGPoint(x: 0.5, y: 0.42)
-    /// Card width as a fraction of screen width, adjusted by the corner grip.
-    @State private var widthFraction: Double = 0.92
-    /// Live drag translation, applied as an offset and committed on release.
-    @State private var dragTranslation: CGSize = .zero
-    @State private var resizeStart: CGSize?
-    @State private var cardSize: CGSize = .zero
-    @State private var didApplyInitialLayout = false
+    /// The card's frame in points, in screen coordinates. Points rather than fractions because
+    /// that is what the user actually placed; rotation converts it deliberately (see `reflow`)
+    /// instead of stretching it into a different shape every time the screen turns.
+    @State private var cardFrame: CGRect = .zero
+    @State private var lastResetToken = 0
 
-    /// Height of the drag-handle row above the script, which counts toward the card's footprint
-    /// when working out how tall the body may be.
-    private static let handleHeight: CGFloat = 5 + Theme.spacingS * 2
+    private var availableRect: CGRect { chromeInsets.availableRect(in: screenSize) }
 
-    /// The region of the screen the card is allowed to occupy.
-    private var availableRect: CGRect {
-        chromeInsets.availableRect(in: screenSize)
-    }
-
-    /// Largest body height (as a fraction of screen height) whose card still fits between the
-    /// chrome, so the resize grip and the height slider can't push it under the controls.
-    private var maxHeightFraction: Double {
-        guard screenSize.height > 0 else { return 0.92 }
-        let usable = max(120, availableRect.height - Self.handleHeight)
-        return min(0.92, Double(usable / screenSize.height))
-    }
-
-    private var maxWidthFraction: Double {
-        guard screenSize.width > 0 else { return 1.0 }
-        return min(1.0, Double(availableRect.width / screenSize.width))
-    }
+    /// Small enough to be worth having, large enough to still read as a prompter.
+    private static let minimumSize = CGSize(width: 200, height: 120)
 
     var body: some View {
-        VStack(spacing: 0) {
-            dragHandle
-
-            // Hit-testing is intentionally ON: the prompter is a real scroll view, so the reader can
-            // nudge the script by hand mid-take. Tap-to-focus still works anywhere outside the card.
+        PrompterCardCanvas(
+            cardFrame: $cardFrame,
+            canvasSize: screenSize,
+            showsHandles: showsHandles,
+            opacity: opacity,
+            minimumSize: Self.minimumSize
+        ) {
+            // Hit-testing is intentionally ON: the prompter is a real scroll view, so the reader
+            // can nudge the script by hand mid-take. Tap-to-focus still works anywhere outside the
+            // card — the canvas passes those touches straight through.
             NativePrompterView(document: document, controller: controller)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
-                .frame(height: screenSize.height * min(heightFraction, maxHeightFraction))
-                .overlay(alignment: .bottomTrailing) { resizeGrip }
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium)
-                .stroke(Theme.border, lineWidth: 1)
-                .allowsHitTesting(false)
-        )
-        .frame(width: screenSize.width * min(widthFraction, maxWidthFraction))
-        .opacity(opacity)
-        .onGeometryChange(for: CGSize.self, of: \.size) { cardSize = $0 }
-        .offset(dragTranslation)
-        .position(
-            x: positionFraction.x * screenSize.width,
-            y: positionFraction.y * screenSize.height
-        )
-        .animation(Theme.smoothSpring, value: screenSize.width) // re-clamp smoothly on rotation
-        .onAppear { applyInitialLayout() }
-        .onChange(of: screenSize) { oldSize, newSize in
-            reflow(from: oldSize, to: newSize)
+        .onAppear { if cardFrame.isEmpty { cardFrame = defaultFrame() } }
+        .onChange(of: screenSize) { oldSize, newSize in reflow(from: oldSize, to: newSize) }
+        // The settings sheet's Height slider and the corner grip drive the same value from two
+        // directions; the tolerance keeps them from writing to each other forever.
+        .onChange(of: heightFraction) { _, newValue in
+            let wanted = newValue * screenSize.height
+            guard abs(wanted - cardFrame.height) > 1 else { return }
+            cardFrame = fitted(CGRect(
+                x: cardFrame.minX,
+                y: cardFrame.midY - wanted / 2,
+                width: cardFrame.width,
+                height: wanted
+            ))
         }
-        // The chrome measures itself after first layout, and its height changes when the screen
-        // rotates (one wide row in landscape, two stacked rows in portrait). Re-clamp whenever it
-        // moves, or a card placed under the old chrome height stays unreachable.
-        .onChange(of: chromeInsets) { _, _ in clampIntoAvailableArea() }
-        .onChange(of: cardSize) { _, _ in clampIntoAvailableArea() }
+        .onChange(of: cardFrame) { _, newValue in
+            guard screenSize.height > 0 else { return }
+            let fraction = Double(newValue.height / screenSize.height)
+            if abs(fraction - heightFraction) > 0.002 { heightFraction = fraction }
+        }
+        .onChange(of: resetToken) { _, newValue in
+            guard newValue != lastResetToken else { return }
+            lastResetToken = newValue
+            withAnimation(Theme.smoothSpring) { cardFrame = defaultFrame() }
+        }
     }
 
-    private var dragHandle: some View {
-        Capsule()
-            .fill(Theme.textTertiary)
-            .frame(width: 44, height: 5)
-            .padding(.vertical, Theme.spacingS)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.001)) // keeps the whole handle row tappable, not just the capsule glyph
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .local)
-                    .onChanged { dragTranslation = $0.translation }
-                    .onEnded { value in
-                        dragTranslation = .zero
-                        positionFraction = clamped(
-                            CGPoint(
-                                x: positionFraction.x + value.translation.width / max(screenSize.width, 1),
-                                y: positionFraction.y + value.translation.height / max(screenSize.height, 1)
-                            ),
-                            in: screenSize
-                        )
-                    }
-            )
+    /// Where a card lands when it has never been placed, or has been reset: centred in whatever
+    /// the chrome leaves, as wide as reading comfort allows.
+    ///
+    /// Landscape gets a *narrower* card on purpose — a full-width card on a landscape screen is a
+    /// 700pt line of text, which is unreadable at prompter speed — but it now gets nearly the
+    /// screen's full height, because the landscape chrome sits in side rails rather than in bands
+    /// across the top and bottom.
+    private func defaultFrame() -> CGRect {
+        guard screenSize.width > 0, screenSize.height > 0 else { return .zero }
+        let region = availableRect
+        let isLandscape = screenSize.width > screenSize.height
+        let width = isLandscape
+            ? min(region.width, max(360, screenSize.width * 0.62))
+            : min(region.width, screenSize.width * 0.92)
+        let height = isLandscape
+            ? region.height
+            : min(region.height, screenSize.height * max(0.25, min(heightFraction, 0.9)))
+        return fitted(CGRect(
+            x: region.midX - width / 2,
+            y: region.midY - height / 2,
+            width: width,
+            height: height
+        ))
     }
 
-    /// Bottom-right corner grip: drag to resize the card's width and height live. Sizes are kept as
-    /// screen fractions (same as the position) so a card sized in portrait stays sane in landscape.
-    private var resizeGrip: some View {
-        Image(systemName: "arrow.down.right.and.arrow.up.left")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(Theme.textSecondary)
-            .frame(width: 34, height: 34)
-            .background(Color.black.opacity(0.55), in: Circle())
-            .overlay(Circle().stroke(Theme.border, lineWidth: 1))
-            .padding(Theme.spacingXS)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                    .onChanged { value in
-                        let start = resizeStart ?? CGSize(width: widthFraction, height: heightFraction)
-                        if resizeStart == nil { resizeStart = start }
-                        // Doubled because the card is center-anchored: dragging the corner by N
-                        // points grows the card by N on that side and N on the opposite one.
-                        let widthDelta = 2 * value.translation.width / max(screenSize.width, 1)
-                        let heightDelta = 2 * value.translation.height / max(screenSize.height, 1)
-                        widthFraction = min(max(start.width + widthDelta, 0.35), maxWidthFraction)
-                        heightFraction = min(max(start.height + heightDelta, 0.15), maxHeightFraction)
-                    }
-                    .onEnded { _ in
-                        resizeStart = nil
-                        clampIntoAvailableArea()
-                    }
-            )
-    }
-
-    /// Rotation used to stretch the card: its width and height are stored as fractions of the
-    /// screen, so a comfortable 92%-wide column in portrait became a 92%-wide, half-height *band*
-    /// in landscape. This converts the card's actual point size through the rotation instead, so it
-    /// stays the same physical size and is only clamped when the new screen genuinely can't fit it.
+    /// Rotation keeps the card the same *physical* size where it can, rather than reinterpreting
+    /// its fractions against a screen with the dimensions swapped — which turned a comfortable
+    /// portrait column into a landscape band. If the new screen genuinely can't hold it, it's
+    /// scaled down to fit and re-centred on the region the chrome leaves.
     private func reflow(from oldSize: CGSize, to newSize: CGSize) {
         guard oldSize.width > 0, oldSize.height > 0, newSize.width > 0, newSize.height > 0 else { return }
-        let widthPoints = oldSize.width * widthFraction
-        let heightPoints = oldSize.height * heightFraction
-        widthFraction = min(max(widthPoints / newSize.width, 0.35), maxWidthFraction)
-        heightFraction = min(max(heightPoints / newSize.height, 0.15), maxHeightFraction)
-        positionFraction = clamped(positionFraction, in: newSize)
-    }
+        guard !cardFrame.isEmpty else { cardFrame = defaultFrame(); return }
 
-    /// Landscape-first defaults for a screen opened while the phone is already sideways. A
-    /// full-width card on a landscape screen is a 700pt-wide line of text, unreadable at prompter
-    /// speed; a narrower column sitting higher up leaves the chrome its own space.
-    private func applyInitialLayout() {
-        guard !didApplyInitialLayout, screenSize.width > 0, screenSize.height > 0 else { return }
-        didApplyInitialLayout = true
-        guard screenSize.width > screenSize.height else { return }
-        widthFraction = 0.6
-        heightFraction = min(0.52, maxHeightFraction)
-        // Centred in the space the chrome leaves rather than at a fixed 36% of the screen, which
-        // in landscape put the card's lower half behind the control row.
-        positionFraction = CGPoint(x: 0.5, y: availableRect.midY / screenSize.height)
-    }
-
-    /// Pulls the card back inside `availableRect` after anything that could have left it straddling
-    /// the chrome: a resize, a rotation, or the chrome itself changing height.
-    private func clampIntoAvailableArea() {
-        guard screenSize.width > 0, screenSize.height > 0 else { return }
-        heightFraction = min(heightFraction, maxHeightFraction)
-        widthFraction = min(widthFraction, maxWidthFraction)
-        positionFraction = clamped(positionFraction, in: screenSize)
-    }
-
-    /// Keeps the card's center far enough from every edge of the *available* region that its own
-    /// bounds never end up outside it — off-screen, or underneath the chrome.
-    private func clamped(_ point: CGPoint, in screenSize: CGSize) -> CGPoint {
-        guard screenSize.width > 0, screenSize.height > 0 else { return point }
         let region = availableRect
-        let halfWidth = cardSize.width / 2 + Theme.spacingS
-        let halfHeight = cardSize.height / 2 + Theme.spacingS
-        // A card taller/wider than the region (possible for a moment before a resize settles)
-        // centres in it instead of producing an inverted range.
-        let minX = min(region.minX + halfWidth, region.midX)
-        let maxX = max(region.maxX - halfWidth, region.midX)
-        let minY = min(region.minY + halfHeight, region.midY)
-        let maxY = max(region.maxY - halfHeight, region.midY)
-        return CGPoint(
-            x: min(max(point.x * screenSize.width, minX), maxX) / screenSize.width,
-            y: min(max(point.y * screenSize.height, minY), maxY) / screenSize.height
-        )
+        var size = cardFrame.size
+        // A card sized for the long edge doesn't fit on the short one; shrink proportionally
+        // instead of clipping one dimension and leaving the other stretched.
+        let scale = min(1, min(region.width / size.width, region.height / size.height))
+        size = CGSize(width: size.width * scale, height: size.height * scale)
+        // Keep it roughly where it was, proportionally, then pull it inside the screen.
+        let centerFractionX = cardFrame.midX / oldSize.width
+        let centerFractionY = cardFrame.midY / oldSize.height
+        cardFrame = fitted(CGRect(
+            x: centerFractionX * newSize.width - size.width / 2,
+            y: centerFractionY * newSize.height - size.height / 2,
+            width: size.width,
+            height: size.height
+        ))
+    }
+
+    /// Clamps a frame to the *screen*, with a small margin, so the card can never be lost off an
+    /// edge — and never so small that it stops being readable.
+    private func fitted(_ rect: CGRect) -> CGRect {
+        PrompterCardGeometry.fit(rect, in: screenSize, minimumSize: Self.minimumSize)
     }
 }
 
-/// How much of the screen's top and bottom edges the surrounding chrome occupies. Measured by the
-/// screen that owns the chrome (Studio, Companion) and handed to the card, so the card never has
-/// to know what that chrome *is* — only how much room it leaves.
+/// Shared clamping, so the SwiftUI side and the UIKit gesture handlers agree on what "on screen"
+/// means down to the point.
+enum PrompterCardGeometry {
+    static let margin: CGFloat = 6
+
+    static func fit(_ rect: CGRect, in canvas: CGSize, minimumSize: CGSize) -> CGRect {
+        guard canvas.width > 0, canvas.height > 0 else { return rect }
+        let maxWidth = max(minimumSize.width, canvas.width - margin * 2)
+        let maxHeight = max(minimumSize.height, canvas.height - margin * 2)
+        let width = min(max(rect.width, minimumSize.width), maxWidth)
+        let height = min(max(rect.height, minimumSize.height), maxHeight)
+        let x = min(max(rect.minX, margin), max(margin, canvas.width - margin - width))
+        let y = min(max(rect.minY, margin), max(margin, canvas.height - margin - height))
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+// MARK: - UIKit canvas
+
+/// A full-screen, touch-transparent canvas that holds one movable card.
+///
+/// It is full-screen so that dragging never changes *this* view's frame (and so never disturbs
+/// SwiftUI's layout); only the card inside it moves. Touches outside the card fall through to the
+/// camera preview underneath, so tap-to-focus and pinch-to-zoom keep working.
+private struct PrompterCardCanvas<Content: View>: UIViewRepresentable {
+    @Binding var cardFrame: CGRect
+    var canvasSize: CGSize
+    var showsHandles: Bool
+    var opacity: Double
+    var minimumSize: CGSize
+    @ViewBuilder var content: Content
+
+    func makeUIView(context: Context) -> PrompterCardCanvasView {
+        let host = UIHostingController(rootView: content)
+        host.view.backgroundColor = .clear
+        // The card is a floating panel, not a screen: without this it inherits the window's safe
+        // area and inset its own text away from a notch that isn't next to it.
+        host.safeAreaRegions = []
+        context.coordinator.host = host
+
+        let view = PrompterCardCanvasView()
+        view.minimumSize = minimumSize
+        view.setContentView(host.view)
+        view.onCommit = { frame in
+            // The one SwiftUI update a whole drag produces.
+            context.coordinator.lastAppliedFrame = frame
+            cardFrame = frame
+        }
+        return view
+    }
+
+    func updateUIView(_ view: PrompterCardCanvasView, context: Context) {
+        context.coordinator.host?.rootView = content
+        view.minimumSize = minimumSize
+        view.setHandlesVisible(showsHandles)
+        view.card.alpha = opacity
+        // Only write the frame when SwiftUI is the one that changed it — echoing back the frame a
+        // gesture just committed would fight the finger that's still on the glass.
+        if !view.isGestureActive, context.coordinator.lastAppliedFrame != cardFrame, !cardFrame.isEmpty {
+            context.coordinator.lastAppliedFrame = cardFrame
+            view.card.frame = cardFrame
+        }
+    }
+
+    static func dismantleUIView(_ view: PrompterCardCanvasView, coordinator: Coordinator) {
+        coordinator.host = nil
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var host: UIHostingController<Content>?
+        var lastAppliedFrame: CGRect = .null
+    }
+}
+
+/// The card itself: the script, a drag handle above it, and a resize grip in its corner. Lays out
+/// its own subviews, so moving or resizing it costs one `layoutSubviews` on one view - no SwiftUI
+/// pass, no Auto Layout solve.
+final class PrompterCardView: UIView {
+    let handleRow = UIView()
+    let grip = UIView()
+
+    private let handleBar = UIView()
+    private let gripIcon = UIImageView()
+    private var contentView: UIView?
+
+    static let handleHeight: CGFloat = 22
+    private static let gripSize: CGFloat = 34
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        layer.cornerRadius = 14
+        layer.cornerCurve = .continuous
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        clipsToBounds = true
+
+        // The whole row is the drag target, not just the capsule glyph drawn in it.
+        handleRow.backgroundColor = .clear
+        handleBar.backgroundColor = UIColor.white.withAlphaComponent(0.38)
+        handleBar.layer.cornerRadius = 2.5
+        handleRow.addSubview(handleBar)
+        addSubview(handleRow)
+
+        grip.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        grip.layer.cornerRadius = Self.gripSize / 2
+        grip.layer.borderWidth = 1
+        grip.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        gripIcon.image = UIImage(systemName: "arrow.down.right.and.arrow.up.left")?
+            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+        gripIcon.tintColor = UIColor.white.withAlphaComponent(0.62)
+        gripIcon.contentMode = .center
+        grip.addSubview(gripIcon)
+        addSubview(grip)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setContentView(_ view: UIView) {
+        contentView?.removeFromSuperview()
+        contentView = view
+        view.backgroundColor = .clear
+        insertSubview(view, at: 0)
+        setNeedsLayout()
+    }
+
+    func setHandlesVisible(_ visible: Bool) {
+        guard handleRow.isHidden == visible else { return }
+        handleRow.isHidden = !visible
+        grip.isHidden = !visible
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let handleHeight = handleRow.isHidden ? 0 : Self.handleHeight
+        handleRow.frame = CGRect(x: 0, y: 0, width: bounds.width, height: Self.handleHeight)
+        handleBar.frame = CGRect(x: (bounds.width - 44) / 2, y: 8, width: 44, height: 5)
+        contentView?.frame = CGRect(
+            x: 0,
+            y: handleHeight,
+            width: bounds.width,
+            height: max(0, bounds.height - handleHeight)
+        )
+        grip.frame = CGRect(
+            x: bounds.width - Self.gripSize - 6,
+            y: bounds.height - Self.gripSize - 6,
+            width: Self.gripSize,
+            height: Self.gripSize
+        )
+        gripIcon.frame = grip.bounds
+    }
+}
+
+/// The canvas view: one card subview, two pans and a pinch, and no SwiftUI involvement until a
+/// gesture ends.
+final class PrompterCardCanvasView: UIView {
+    let card = PrompterCardView()
+
+    /// Frame at the moment the current gesture began, so every update is computed from a fixed
+    /// origin rather than accumulating rounding error.
+    private var gestureStartFrame: CGRect = .zero
+
+    var minimumSize = CGSize(width: 200, height: 120)
+    var onCommit: ((CGRect) -> Void)?
+    private(set) var isGestureActive = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        addSubview(card)
+
+        let move = UIPanGestureRecognizer(target: self, action: #selector(handleMove(_:)))
+        card.handleRow.addGestureRecognizer(move)
+
+        let resize = UIPanGestureRecognizer(target: self, action: #selector(handleResize(_:)))
+        card.grip.addGestureRecognizer(resize)
+
+        // Pinch anywhere on the card resizes it. The prompter's own scroll view only cares about
+        // single-finger drags, so the two never contend for the same touch.
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinch.delegate = self
+        card.addGestureRecognizer(pinch)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func setContentView(_ view: UIView) {
+        card.setContentView(view)
+    }
+
+    func setHandlesVisible(_ visible: Bool) {
+        card.setHandlesVisible(visible)
+    }
+
+    /// Touches that miss the card belong to whatever is underneath it — the camera preview's
+    /// tap-to-focus and pinch-to-zoom. Without this the canvas would swallow the entire screen.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+
+    // MARK: Gestures
+
+    @objc private func handleMove(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            beginGesture()
+        case .changed:
+            let translation = gesture.translation(in: self)
+            apply(gestureStartFrame.offsetBy(dx: translation.x, dy: translation.y))
+        case .ended, .cancelled, .failed:
+            endGesture()
+        default:
+            break
+        }
+    }
+
+    @objc private func handleResize(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            beginGesture()
+        case .changed:
+            let translation = gesture.translation(in: self)
+            // The grip is the bottom-right corner, so the top-left stays put and the card grows
+            // by exactly as much as the finger moved — no doubling, no drift.
+            apply(CGRect(
+                x: gestureStartFrame.minX,
+                y: gestureStartFrame.minY,
+                width: gestureStartFrame.width + translation.x,
+                height: gestureStartFrame.height + translation.y
+            ))
+        case .ended, .cancelled, .failed:
+            endGesture()
+        default:
+            break
+        }
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            beginGesture()
+        case .changed:
+            let scale = gesture.scale
+            let size = CGSize(
+                width: gestureStartFrame.width * scale,
+                height: gestureStartFrame.height * scale
+            )
+            apply(CGRect(
+                x: gestureStartFrame.midX - size.width / 2,
+                y: gestureStartFrame.midY - size.height / 2,
+                width: size.width,
+                height: size.height
+            ))
+        case .ended, .cancelled, .failed:
+            endGesture()
+        default:
+            break
+        }
+    }
+
+    private func beginGesture() {
+        isGestureActive = true
+        gestureStartFrame = card.frame
+    }
+
+    private func apply(_ frame: CGRect) {
+        // No implicit CALayer animation: an animated frame change lags the finger by the length of
+        // the animation, which is exactly the "it doesn't stick to my thumb" feeling.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        card.frame = PrompterCardGeometry.fit(frame, in: bounds.size, minimumSize: minimumSize)
+        card.layoutIfNeeded()
+        CATransaction.commit()
+    }
+
+    private func endGesture() {
+        isGestureActive = false
+        onCommit?(card.frame)
+    }
+}
+
+extension PrompterCardCanvasView: UIGestureRecognizerDelegate {
+    /// The pinch shares its touches with the prompter's own scroll view rather than cancelling it,
+    /// so a two-finger resize doesn't leave the script mid-drag.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer is UIPinchGestureRecognizer
+    }
+}
+
+/// How much of each screen edge the surrounding chrome occupies. Measured by the screen that owns
+/// the chrome (Studio, Companion) and handed to the card, so the card never has to know what that
+/// chrome *is* — only where it leaves room.
+///
+/// Landscape puts the controls in side rails, which is why this has horizontal edges at all: in
+/// landscape an iPhone has ~390 points of height and none of it can be spared for a control bar.
 struct PrompterChromeInsets: Equatable {
     var top: CGFloat = 0
     var bottom: CGFloat = 0
+    var leading: CGFloat = 0
+    var trailing: CGFloat = 0
 
     static let zero = PrompterChromeInsets()
 
     func availableRect(in screenSize: CGSize) -> CGRect {
+        let width = max(200, screenSize.width - leading - trailing)
         let height = max(120, screenSize.height - top - bottom)
-        return CGRect(x: 0, y: top, width: screenSize.width, height: height)
+        return CGRect(x: leading, y: top, width: width, height: height)
     }
 }

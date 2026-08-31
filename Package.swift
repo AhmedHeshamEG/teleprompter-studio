@@ -29,6 +29,8 @@ let package = Package(
                 // resource basenames to be unique within a target, even across subdirectories.
                 .copy("SharedWebResources/marked.min.js"),
                 .copy("SharedWebResources/katex"),
+                // OpenDyslexic (SIL OFL), registered with Core Text at launch — see PrompterFonts.
+                .copy("Resources/Fonts"),
             ],
             // Swift 6 tools/syntax, but Swift 5 language mode: relaxed (non-strict) actor
             // isolation checking, matching how most shipping iOS apps build today. See

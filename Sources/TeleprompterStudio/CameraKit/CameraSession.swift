@@ -214,9 +214,14 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// Last aperture the user asked for, re-applied whenever Cinematic (re-)engages.
     private var requestedAperture: Double = 2.8
 
+    /// Set when the camera couldn't honour the requested resolution/frame rate and something else
+    /// was used instead; `nil` when the request was met exactly. Read by Studio Settings and shown
+    /// as a badge over the preview.
+    var captureFallbackNote: String?
+
     /// Last requested capture settings, so Cinematic format selection and a later
     /// `applyResolution` agree about what the user asked for.
-    private var lastResolution: CaptureResolution = .hd1080
+    private var lastResolution: CaptureResolution = .uhd4k
     private var lastFPS: Double = 30
 
     func configure() async throws {
@@ -644,22 +649,78 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
                 self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
                 return
             }
-            guard let format = Self.bestFormat(for: device, resolution: resolution, fps: fps) else { return }
+            // 4K/60 (and 4K at all, on some cameras — the ultra-wide and most front cameras cap
+            // lower) simply doesn't exist as a format everywhere. Asking for it and silently doing
+            // nothing left the app *claiming* 4K in Settings while recording whatever preset the
+            // session had negotiated, which is the worst of the three possible outcomes. Walk down
+            // to the nearest thing the camera really has, and say what happened.
+            guard let (format, chosen, chosenFPS) = Self.resolveFormat(
+                for: device,
+                resolution: resolution,
+                fps: fps
+            ) else { return }
             self.captureSession.beginConfiguration()
             defer { self.captureSession.commitConfiguration() }
             do {
                 try device.lockForConfiguration()
                 device.activeFormat = format
-                let duration = CMTime(value: 1, timescale: Int32(fps))
+                let duration = CMTime(value: 1, timescale: Int32(chosenFPS))
                 device.activeVideoMinFrameDuration = duration
                 device.activeVideoMaxFrameDuration = duration
                 device.unlockForConfiguration()
             } catch {
                 return
             }
+            self.reportCaptureFallback(
+                requested: resolution,
+                requestedFPS: fps,
+                actual: chosen,
+                actualFPS: chosenFPS
+            )
             // Format changes rebuild connections, so rotation and mirroring have to be re-applied.
             self.applyMirroring(facing: self.facing)
             self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
+        }
+    }
+
+    /// The best format for what was asked, then for the same resolution at 30fps, then for 1080p,
+    /// in that order — resolution is what people notice, frame rate is what they can live with.
+    private static func resolveFormat(
+        for device: AVCaptureDevice,
+        resolution: CaptureResolution,
+        fps: Double
+    ) -> (AVCaptureDevice.Format, CaptureResolution, Double)? {
+        var attempts: [(CaptureResolution, Double)] = [(resolution, fps)]
+        if fps > 30 { attempts.append((resolution, 30)) }
+        if resolution != .hd1080 {
+            attempts.append((.hd1080, fps))
+            if fps > 30 { attempts.append((.hd1080, 30)) }
+        }
+        for (candidateResolution, candidateFPS) in attempts {
+            if let format = bestFormat(for: device, resolution: candidateResolution, fps: candidateFPS) {
+                return (format, candidateResolution, candidateFPS)
+            }
+        }
+        return nil
+    }
+
+    /// Tells whoever is listening that the camera landed somewhere other than what was asked for —
+    /// once per distinct outcome, not once per reconfiguration.
+    private func reportCaptureFallback(
+        requested: CaptureResolution,
+        requestedFPS: Double,
+        actual: CaptureResolution,
+        actualFPS: Double
+    ) {
+        let note: String?
+        if requested == actual, requestedFPS == actualFPS {
+            note = nil
+        } else {
+            note = "This camera has no \(requested.rawValue) @ \(Int(requestedFPS))fps format. Recording \(actual.rawValue) @ \(Int(actualFPS))fps."
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.captureFallbackNote != note else { return }
+            self.captureFallbackNote = note
         }
     }
 

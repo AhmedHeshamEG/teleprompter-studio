@@ -3,6 +3,9 @@ import SwiftUI
 
 struct StudioSettingsSheet: View {
     @Bindable var viewModel: CameraStudioViewModel
+    /// Puts the floating prompter card back to its default place and size. Owned by Studio, since
+    /// the card's frame lives there.
+    var onResetCard: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -20,6 +23,14 @@ struct StudioSettingsSheet: View {
                 }
                 .onChange(of: viewModel.resolution) { _, _ in viewModel.applyCaptureSettings() }
                 .onChange(of: viewModel.fps) { _, _ in viewModel.applyCaptureSettings() }
+
+                if let note = viewModel.captureFallbackNote {
+                    Section {
+                        Label(note, systemImage: "info.circle")
+                            .font(.footnote)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
 
                 Section {
                     Toggle("Rule-of-Thirds Grid", isOn: $viewModel.showGrid)
@@ -46,16 +57,35 @@ struct StudioSettingsSheet: View {
                 }
 
                 Section {
+                    Picker("Typeface", selection: Binding(
+                        get: { PrompterTypeface(fontName: viewModel.script.style?.fontName ?? "System") },
+                        set: { viewModel.setTypeface($0) }
+                    )) {
+                        ForEach(PrompterTypeface.studioChoices) { face in
+                            Text(face.displayName).tag(face)
+                        }
+                    }
+                } header: {
+                    Text("Prompter Text")
+                } footer: {
+                    Text("OpenDyslexic weights the bottom of every letter, which keeps similar shapes (b/d, p/q) from flipping as you read. It applies to this script everywhere — Studio, the editor and any linked Companion.")
+                }
+
+                Section {
                     LabeledSlider(label: "Opacity", systemImage: "circle.lefthalf.filled", value: $viewModel.overlayOpacity, range: 0.3...1.0) {
                         "\(Int($0 * 100))%"
                     }
                     LabeledSlider(label: "Height", systemImage: "arrow.up.and.down", value: $viewModel.overlayHeightFraction, range: 0.25...0.9) {
                         "\(Int($0 * 100))%"
                     }
+                    Button("Reset Card Position & Size") {
+                        onResetCard()
+                        dismiss()
+                    }
                 } header: {
                     Text("Teleprompter Overlay")
                 } footer: {
-                    Text("Drag the handle above the script text to move the card, or its bottom-right grip to resize it. You can also nudge the script itself by hand mid-take.")
+                    Text("Drag the handle above the script to move the card, its bottom-right grip — or a two-finger pinch — to resize it. You can also nudge the script itself by hand mid-take. The arrows button at the top right of Studio sweeps every other control off the screen and back.")
                 }
 
                 Section {
