@@ -7,6 +7,10 @@ struct TeleprompterStudioApp: App {
     let modelContainer: ModelContainer
 
     init() {
+        // OpenDyslexic ships inside the SwiftPM resource bundle, which `UIAppFonts` can't see —
+        // it has to be handed to Core Text ourselves, before anything renders a script.
+        PrompterFonts.registerBundledFonts()
+
         let schema = Schema([
             Script.self,
             ScriptStyle.self,

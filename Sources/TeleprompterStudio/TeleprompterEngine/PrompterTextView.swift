@@ -23,6 +23,7 @@ import UIKit
 /// correctly at any size in the 18–120pt range, at any length.
 struct PrompterTextView: UIViewRepresentable {
     var text: String
+    var fontName: String
     var fontSize: Double
     var lineHeight: Double
     var textColor: UIColor
@@ -60,6 +61,7 @@ struct PrompterTextView: UIViewRepresentable {
     private func apply(to view: PrompterScrollView, coordinator: Coordinator, isFirstApply: Bool) {
         view.configureText(
             text,
+            fontName: fontName,
             fontSize: CGFloat(fontSize),
             lineHeight: CGFloat(lineHeight),
             color: textColor,
@@ -104,6 +106,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
     /// Cached inputs so `configureText` can no-op when nothing actually changed — `updateUIView`
     /// runs on every SwiftUI update, and re-typesetting a full script is not free.
     private var cachedText: String?
+    private var cachedFontName: String = ""
     private var cachedFontSize: CGFloat = 0
     private var cachedLineHeight: CGFloat = 0
     private var cachedColor: UIColor = .white
@@ -163,6 +166,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
 
     func configureText(
         _ text: String,
+        fontName: String,
         fontSize: CGFloat,
         lineHeight: CGFloat,
         color: UIColor,
@@ -170,6 +174,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
     ) {
         let insetsChanged = cachedInsetPercent != horizontalInsetPercent
         let unchanged = cachedText == text
+            && cachedFontName == fontName
             && cachedFontSize == fontSize
             && cachedLineHeight == lineHeight
             && cachedColor == color
@@ -178,18 +183,24 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
 
         let textChanged = cachedText != nil && cachedText != text
         cachedText = text
+        cachedFontName = fontName
         cachedFontSize = fontSize
         cachedLineHeight = lineHeight
         cachedColor = color
         cachedInsetPercent = horizontalInsetPercent
 
+        let font = PrompterFonts.uiFont(named: fontName, size: fontSize)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = max(0, (lineHeight - 1) * fontSize)
+        // Off the font's own line height rather than the point size: OpenDyslexic's ascenders and
+        // descenders are far taller than the system face's, so a spacing computed from the point
+        // size alone left its lines visibly touching at the same "1.4x" the system font read fine
+        // at.
+        paragraph.lineSpacing = max(0, (lineHeight - 1) * font.lineHeight)
         paragraph.alignment = .left
         attributedText = NSAttributedString(
             string: text.isEmpty ? " " : text,
             attributes: [
-                .font: UIFont.systemFont(ofSize: fontSize, weight: .semibold),
+                .font: font,
                 .foregroundColor: color,
                 .paragraphStyle: paragraph,
             ]

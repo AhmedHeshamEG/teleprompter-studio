@@ -5,14 +5,19 @@ struct StylePanelView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
-    private static let fontChoices = ["System", "Georgia", "Helvetica Neue", "Avenir Next", "Courier New"]
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Font") {
+                    // One list of faces, shared with Studio's on-set picker, so a script can't be
+                    // set to a typeface only one of the two screens knows how to render.
                     Picker("Typeface", selection: $style.fontName) {
-                        ForEach(Self.fontChoices, id: \.self) { Text($0) }
+                        ForEach(PrompterTypeface.allCases) { face in
+                            Text(face.displayName)
+                                .font(PrompterFonts.font(named: face.rawValue, size: 17))
+                                .tag(face.rawValue)
+                        }
                     }
                     LabeledSlider(label: "Size", systemImage: "textformat.size", value: $style.baseSize, range: 18...120)
                     LabeledSlider(label: "Line Height", systemImage: "line.3.horizontal", value: $style.lineHeight, range: 1.0...2.2) {

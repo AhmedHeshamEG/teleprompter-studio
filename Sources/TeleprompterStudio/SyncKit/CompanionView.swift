@@ -51,6 +51,13 @@ struct CompanionView: View {
     /// Measured height of this screen's own chrome, so the prompter card stays clear of it — the
     /// Companion is a mirror of the Director's layout and inherits the same landscape squeeze.
     @State private var chromeInsets = PrompterChromeInsets()
+    /// Mirrors Studio's hide button: on the Companion this matters just as much, since it's often
+    /// the device sitting under the lens.
+    @State private var chromeVisible = true
+
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    private var isCompactHeight: Bool { verticalSizeClass == .compact }
 
     /// How far the local scroll may drift from the Director's reported position before it's
     /// snapped back. The Companion scrolls under its own steam at the Director's speed and only
@@ -74,17 +81,66 @@ struct CompanionView: View {
                     opacity: 0.92,
                     heightFraction: $overlayHeightFraction,
                     screenSize: screen.size,
-                    chromeInsets: chromeInsets
+                    chromeInsets: chromeInsets,
+                    showsHandles: chromeVisible
                 )
 
-                VStack {
-                    topBar
-                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.top = $0 }
-                    Spacer()
-                    remoteControls
-                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.bottom = $0 }
+                // Same landscape reasoning as Studio: on a ~390pt-tall screen the controls take
+                // the width, never the height, or there is nothing left for the script.
+                if isCompactHeight {
+                    HStack {
+                        VStack(spacing: Theme.spacingM) {
+                            if chromeVisible { topBarItems }
+                        }
+                        .padding(.leading, Theme.spacingS)
+                        .onGeometryChange(for: CGFloat.self, of: \.size.width) { chromeInsets.leading = $0 + Theme.spacingS }
+
+                        Spacer(minLength: 0)
+
+                        VStack(spacing: Theme.spacingL) { remoteControlItems }
+                            .disabled(coordinator.connectionState != .connected)
+                            .opacity(coordinator.connectionState == .connected ? 1 : 0.4)
+                            .padding(.trailing, Theme.spacingS)
+                            .onGeometryChange(for: CGFloat.self, of: \.size.width) { chromeInsets.trailing = $0 + Theme.spacingS }
+                    }
+                } else {
+                    VStack {
+                        HStack { topBarItems }
+                            .padding(Theme.spacingM)
+                            // Faded *and* deaf: a control you can't see but can still press is
+                            // worse than one that's simply gone.
+                            .opacity(chromeVisible ? 1 : 0)
+                            .allowsHitTesting(chromeVisible)
+                            .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.top = $0 }
+                        Spacer()
+                        HStack(spacing: Theme.spacingL) { remoteControlItems }
+                            .disabled(coordinator.connectionState != .connected)
+                            .opacity(coordinator.connectionState == .connected ? 1 : 0.4)
+                            .padding(Theme.spacingL)
+                            .onGeometryChange(for: CGFloat.self, of: \.size.height) { chromeInsets.bottom = $0 }
+                    }
                 }
+
+                VStack {
+                    HStack {
+                        Spacer()
+                        ChromeButton(
+                            systemImage: chromeVisible
+                                ? "arrow.down.right.and.arrow.up.left"
+                                : "arrow.up.left.and.arrow.down.right",
+                            isActive: !chromeVisible,
+                            size: Theme.minControlSizeCompact
+                        ) {
+                            chromeVisible.toggle()
+                        }
+                        .accessibilityLabel(chromeVisible ? "Hide controls" : "Show controls")
+                    }
+                    Spacer()
+                }
+                .padding(.trailing, Theme.spacingM)
+                .padding(.top, isCompactHeight ? Theme.spacingS : Theme.spacingM)
             }
+            .animation(Theme.quickSpring, value: chromeVisible)
         }
         .statusBarHidden()
         .preferredColorScheme(.dark)
@@ -143,52 +199,46 @@ struct CompanionView: View {
         }
     }
 
-    private var topBar: some View {
-        HStack {
-            ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
-            Spacer()
-            Badge(
-                text: coordinator.connectionState == .connected ? "Companion · Linked" : "Companion · Searching",
-                color: coordinator.connectionState == .connected ? Theme.success : Theme.textSecondary,
-                filled: coordinator.connectionState == .connected
-            )
-            if coordinator.remoteIsRecording {
-                RecordingIndicator(isRecording: true, elapsed: coordinator.remoteElapsed)
-            }
-            Spacer()
-            // One button, three states: full monitor → corner monitor → off → full. Closing the
-            // camera is never a one-way door.
-            ChromeButton(systemImage: monitorMode.systemImage, size: Theme.minControlSizeCompact) {
-                withAnimation(Theme.quickSpring) { monitorMode = monitorMode.next }
-            }
-            .accessibilityLabel(monitorMode.label)
+    @ViewBuilder
+    private var topBarItems: some View {
+        ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
+        if !isCompactHeight { Spacer() }
+        Badge(
+            text: coordinator.connectionState == .connected ? "Companion · Linked" : "Companion · Searching",
+            color: coordinator.connectionState == .connected ? Theme.success : Theme.textSecondary,
+            filled: coordinator.connectionState == .connected
+        )
+        if coordinator.remoteIsRecording {
+            RecordingIndicator(isRecording: true, elapsed: coordinator.remoteElapsed)
         }
-        .padding(Theme.spacingM)
+        if !isCompactHeight { Spacer() }
+        // One button, three states: full monitor → corner monitor → off → full. Closing the
+        // camera is never a one-way door.
+        ChromeButton(systemImage: monitorMode.systemImage, size: Theme.minControlSizeCompact) {
+            withAnimation(Theme.quickSpring) { monitorMode = monitorMode.next }
+        }
+        .accessibilityLabel(monitorMode.label)
+        // Keeps this row clear of the floating hide/show button in the same corner.
+        if !isCompactHeight { Color.clear.frame(width: 48, height: 1) }
     }
 
-    private var remoteControls: some View {
-        HStack(spacing: Theme.spacingL) {
-            ChromeButton(systemImage: "gobackward") {
-                coordinator.sendRemoteCommand(.jumpToTop)
-            }
-            ChromeButton(
-                systemImage: (coordinator.latestPlayback?.isPlaying ?? false) ? "pause.fill" : "play.fill",
-                isActive: true
-            ) {
-                coordinator.sendRemoteCommand(.togglePlayback)
-            }
-            ChromeButton(
-                systemImage: coordinator.remoteIsRecording ? "stop.fill" : "record.circle",
-                isDestructive: true
-            ) {
-                coordinator.sendRemoteCommand(coordinator.remoteIsRecording ? .stopRecording : .startRecording)
-            }
+    @ViewBuilder
+    private var remoteControlItems: some View {
+        ChromeButton(systemImage: "gobackward") {
+            coordinator.sendRemoteCommand(.jumpToTop)
         }
-        .padding(Theme.spacingL)
-        // Remote control is meaningless with nobody on the other end, and a dead-looking button you
-        // can still press reads as a bug.
-        .disabled(coordinator.connectionState != .connected)
-        .opacity(coordinator.connectionState == .connected ? 1 : 0.4)
+        ChromeButton(
+            systemImage: (coordinator.latestPlayback?.isPlaying ?? false) ? "pause.fill" : "play.fill",
+            isActive: true
+        ) {
+            coordinator.sendRemoteCommand(.togglePlayback)
+        }
+        ChromeButton(
+            systemImage: coordinator.remoteIsRecording ? "stop.fill" : "record.circle",
+            isDestructive: true
+        ) {
+            coordinator.sendRemoteCommand(coordinator.remoteIsRecording ? .stopRecording : .startRecording)
+        }
     }
 }
 
@@ -201,39 +251,39 @@ private struct CompanionMonitor: View {
 
     var body: some View {
         if mode != .off, coordinator.isPreviewStreamAvailable, let image = coordinator.latestPreviewImage {
-            switch mode {
-            case .full:
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: screenSize.width, height: screenSize.height)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            case .pip:
-                VStack {
-                    HStack {
-                        Spacer()
-                        Image(uiImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: min(200, screenSize.width * 0.32))
-                            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall))
-                            .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall).stroke(Theme.border, lineWidth: 1))
-                            .padding(.horizontal, Theme.spacingM)
-                            .padding(.top, 64) // clear of the top chrome row
-                    }
-                    Spacer()
-                }
+        switch mode {
+        case .full:
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: screenSize.width, height: screenSize.height)
+                .ignoresSafeArea()
                 .allowsHitTesting(false)
-            case .off:
-                EmptyView()
-            }
-        } else if mode != .off, !coordinator.isPreviewStreamAvailable {
+        case .pip:
             VStack {
+                HStack {
+                    Spacer()
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: min(200, screenSize.width * 0.32))
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall))
+                        .overlay(RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall).stroke(Theme.border, lineWidth: 1))
+                        .padding(.horizontal, Theme.spacingM)
+                        .padding(.top, 64) // clear of the top chrome row
+                }
                 Spacer()
-                Badge(text: "Prompter mirror only", color: Theme.textSecondary)
-                    .padding(.bottom, 120)
             }
+            .allowsHitTesting(false)
+        case .off:
+            EmptyView()
+        }
+        } else if mode != .off, !coordinator.isPreviewStreamAvailable {
+        VStack {
+            Spacer()
+            Badge(text: "Prompter mirror only", color: Theme.textSecondary)
+                .padding(.bottom, 120)
+        }
         }
     }
 }
