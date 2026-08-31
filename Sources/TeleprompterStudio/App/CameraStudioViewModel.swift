@@ -34,8 +34,16 @@ final class CameraStudioViewModel {
 
     var runMode: StudioRunMode = .record
     var cinematicMode: CinematicMode = .off
-    var resolution: CaptureResolution = .hd1080
+    /// 4K/30 by default: this is a camera app whose whole job is the take you keep, and every
+    /// iPhone it can run on shoots 4K. Devices (or modes) that can't are walked down to the
+    /// nearest real format by `AVCameraSession.applyResolution`, which says so rather than
+    /// quietly recording something else.
+    var resolution: CaptureResolution = .uhd4k
     var fps: Double = 30
+
+    /// What the camera actually settled on when it couldn't do what was asked. Mirrored from the
+    /// session so views can read it without observing the camera object directly.
+    var captureFallbackNote: String? { session.captureFallbackNote }
 
     var overlayOpacity: Double = 0.92
     var overlayHeightFraction: Double = 0.55
@@ -93,6 +101,15 @@ final class CameraStudioViewModel {
     var cinematicApertureRange: ClosedRange<Double> {
         guard let range = session.cinematicApertureRange else { return 2...16 }
         return Double(range.min)...Double(range.max)
+    }
+
+    /// Changes the script's typeface and re-publishes the document, so Studio, the editor preview
+    /// and any linked Companion all switch at once. Written through the view model rather than
+    /// bound straight to the model because `document` is a snapshot — see `refreshDocument`.
+    func setTypeface(_ typeface: PrompterTypeface) {
+        script.style?.fontName = typeface.rawValue
+        refreshDocument()
+        prompterController.loadDocument(document)
     }
 
     func setCinematicAperture(_ fNumber: Double) {
