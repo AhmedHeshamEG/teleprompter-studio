@@ -15,6 +15,16 @@ for the full story of how that worked and the tradeoffs it forced.
   script of any length (a `UILabel` can't: past the GPU's maximum texture height it silently draws
   nothing). Scripts are authored with bold/italic/underline/color/highlight and LaTeX math via
   bundled, offline [KaTeX](https://katex.org) (no CDN, no network dependency).
+- **A prompter card you place, not one that places you** — drag its handle to move it, its corner grip
+  or a two-finger pinch to resize; the gestures run in UIKit, so a drag moves one view's frame instead
+  of re-rendering the screen 60 times a second. One button sweeps every other control off the display
+  (leaving the script, the transport, the take timer and the record button), and in landscape the
+  chrome lives in side rails, because a landscape iPhone has ~390 points of height and none to spare.
+- **Dyslexia-friendly typesetting** — bundled [OpenDyslexic](https://opendyslexic.org) (SIL OFL),
+  selectable per script from Studio Settings or the editor's Style panel, with line spacing derived from
+  the font's own metrics.
+- **4K/30 capture by default**, walking down to the nearest format the camera actually has (and saying
+  so on screen) rather than silently recording something else.
 - **Two run modes**: *Record* (the app is the camera and records the take) or *Prompt-only* (just the
   reader, for filming with a separate camera/app).
 - **Real Cinematic capture** on supported hardware (iPhone 13+, iOS 26+) via `AVCaptureDeviceInput`'s
