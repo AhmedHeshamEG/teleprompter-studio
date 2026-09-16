@@ -220,9 +220,6 @@ final class CameraStudioViewModel {
         // failure (permission not granted, no matching format, anything) silently left the
         // prompter blank forever, with no visible error. That's the actual bug behind "the
         // prompter text isn't shown" reports.
-        prompterController.onDidFinish = { [weak self] in
-            self?.stopRecordingIfNeeded()
-        }
         recordingCoordinator.onRecordingFailed = { [weak self] message in
             self?.errorMessage = message
         }

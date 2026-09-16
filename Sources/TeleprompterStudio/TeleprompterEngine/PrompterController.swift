@@ -66,8 +66,6 @@ final class PrompterController {
     /// One-shot seek request; the view applies it then calls `clearJumpToFractionRequest()`.
     private(set) var jumpToFractionRequest: Double?
 
-    var onDidFinish: (() -> Void)?
-
     private var countdownTask: Task<Void, Never>?
 
     init() {
@@ -151,9 +149,13 @@ final class PrompterController {
     }
 
     /// Called by `NativePrompterView` when autoscroll reaches the end of the script.
+    ///
+    /// Reaching the end of the script stops the *scroll*, and nothing else. It deliberately does
+    /// not touch the recording: running out of script is not the end of a take — you still have to
+    /// hold the last line, drop the sign-off, or just stop on your own beat — so the take ends when
+    /// the record button says it does.
     func markFinished() {
         isPlaying = false
         progress = 1
-        onDidFinish?()
     }
 }
