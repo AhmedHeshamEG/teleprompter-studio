@@ -20,3 +20,6 @@ DerivedData/
 *.mobileprovision
 *.keystore
 *.jks
+
+# private working notes - kept locally, never published
+teleprompter_megaprompt.md
