@@ -157,7 +157,7 @@ enum CinematicVideoSupport {
     /// 0 none, 1 strong, 2 weak.
     static func focusMode(of metadataObject: AVMetadataObject) -> Int {
         guard #available(iOS 26.0, *) else { return 0 }
-        return Int(metadataObject.cinematicVideoFocusMode)
+        return metadataObject.cinematicVideoFocusMode.rawValue
     }
 
     /// The subject ID carried by a metadata object, used to rack focus onto that exact subject.
