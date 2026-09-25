@@ -7,7 +7,10 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macos-26 ships Xcode 26 and the iOS 26 SDK, which is what declares Apple's Cinematic Video
+    # capture API (`isCinematicVideoCaptureEnabled` & co). The old macos-15 image defaulted to
+    # Xcode 16.4 / iOS 18.5, which is why that API used to be reached through runtime tricks.
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
