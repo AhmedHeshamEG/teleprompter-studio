@@ -68,48 +68,30 @@ from the project root. If anything fails, it's most likely one of the items belo
   (`katex/fonts/*.woff2` from `katex.min.css`) are preserved inside `Bundle.module`, so the CSS's
   relative font URLs resolve correctly without extra `Bundle` plumbing.
 
-## Real Cinematic capture — reached at runtime, not through the SDK
+## Apple Cinematic capture — native iOS 26 API, no simulation
 
-The hardware Cinematic Video members (`AVCaptureDeviceInput.isCinematicVideoCaptureEnabled`,
-`AVCaptureDevice.Format.isCinematicVideoCaptureSupported`, `simulatedAperture`) do **not** exist
-in the iOS SDK this project's CI toolchain builds against — that was confirmed by a real compiler
-error, not guessed. Writing them as ordinary Swift is therefore a hard build failure.
+The workflow runs on `macos-26` (Xcode 26, iOS 26 SDK), so `CinematicVideoSupport.swift` calls
+Apple's Cinematic Video API directly (`isCinematicVideoCaptureEnabled`, `simulatedAperture`,
+`requiredMetadataObjectTypesForCinematicVideoCapture`, `setCinematicVideoTrackingFocus`, …),
+each behind `#available(iOS 26.0, *)` since the app still deploys to iOS 17. The earlier
+Objective-C-runtime bridge (needed only because the old runner's Xcode 16.4 SDK lacked the API)
+and the synthetic segmentation + blur fallback are both gone.
 
-They are, however, Objective-C properties that exist **in the OS on the device**. So
-`CameraKit/CinematicReal/CinematicVideoSupport.swift` reaches them by selector at runtime:
+- Cinematic only runs on Apple's supported cameras: the back **Dual Wide** and the front
+  **TrueDepth**. The app normally opens the Triple camera (for its telephoto), which has no
+  Cinematic formats — switching Cinematic on therefore rebuilds the session around the right
+  camera (`CinematicVideoSupport.cinematicDevice(for:)`), and switching it off goes back.
+- `metadataObjectTypes` is set to exactly the required list; any other set raises while
+  Cinematic is on.
+- When a phone/iOS can't do it, the button turns back off and a banner says why.
 
-- `AVCaptureDeviceInput.instancesRespond(to:)` decides whether this OS knows Cinematic at all.
-- `AVCaptureDevice.Format.responds(to:)` + KVC decides which formats can shoot it (Cinematic has
-  its own constraints — only some cameras, only some resolutions/frame rates).
-- KVC (`setValue:forKey:`), never `perform`, does the actual set: these are primitive `BOOL`/
-  `float` properties, which `perform` cannot pass or read correctly.
-- Every call is preceded by a `responds(to:)` check, so on an OS without the API nothing is
-  invoked and no `NSUnknownKeyException` is possible. Candidate name lists are tried in order,
-  since the exact spelling can't be verified from this environment.
+## Zoom
 
-This compiles on any SDK and gets the genuine hardware path on any device whose iOS has it.
-`AVCameraSession.isCinematicSupported` reports device capability (resolved once per configuration,
-not per view update); `isCinematicActive` reports whether the OS actually *accepted* it, which is
-what `CameraStudioViewModel.settleCinematicKind()` uses to decide between `.real` and falling back
-to `SyntheticCinematicPipeline`. The app never claims an effect it isn't running: the on-screen
-badge reads "Cinematic" for hardware and "Simulated Cinematic" for the fallback.
-
-Constraints deliberately honoured rather than fought:
-- Format choice is the system's. `CinematicVideoSupport.bestFormat` prefers the requested
-  resolution but takes the largest Cinematic-capable format otherwise, because insisting on 4K
-  would simply turn the feature off on devices that only offer 1080p.
-- Frame duration is left alone while Cinematic is on — overriding it is a common way to have the
-  flag silently refused.
-- `applyResolution` refuses to swap in a plain format while Cinematic is active, since that would
-  quietly disable it.
-- The raw `AVCaptureVideoDataOutput` tap stays detached for the hardware path (it's only needed by
-  the synthetic compositor and the Companion stream); a second full-rate output is another way to
-  get Cinematic declined.
-
-Still not wired: `setCinematicVideoTrackingFocus(detectedObjectID:focusMode:)` for tap-to-rack.
-It takes a struct/enum pair, which the runtime bridge above can't express (`perform` only passes
-objects, and `NSInvocation` isn't available in Swift). It needs a real SDK, or a small
-Objective-C shim file, to call.
+`AVCameraSession.currentZoom`/`zoomPresets` are in stock-Camera units (1× = main wide lens). On
+virtual multi-lens cameras a raw `videoZoomFactor` of 1.0 is the ultra-wide, so 1× is the first
+`virtualDeviceSwitchOverVideoZoomFactors` entry; it is re-applied after every device/format change
+(those reset zoom). Pinch and the lens button only work when Studio Settings → Zoom Control is on
+(off by default, stored in `UserDefaults`).
 
 ## Design decisions worth knowing about
 
@@ -123,12 +105,8 @@ Objective-C shim file, to call.
   changes. `SyncCoordinator`'s `MCSessionDelegate`/advertiser/browser delegate methods are
   `nonisolated` (required, since MultipeerConnectivity calls them off-main) and hop into
   `Task { @MainActor in ... }` before touching state.
-- **Real Cinematic vs. synthetic both record through `AVCaptureMovieFileOutput` vs.
-  `AVAssetWriter` respectively** — real Cinematic capture is just the plain movie-file path with
-  `isCinematicVideoCaptureEnabled` turned on (Apple bakes the depth/disparity track in for you);
-  only the synthetic fallback needs the frame-by-frame Vision-segmentation + Core Image blur +
-  `AVAssetWriterInputPixelBufferAdaptor` pipeline, because that's the only path that has to
-  modify pixels before they're written.
+- **Cinematic records through the same `AVCaptureMovieFileOutput` as plain video** — it's the
+  movie-file path with `isCinematicVideoCaptureEnabled` on; Apple bakes the depth track in.
 - **One `AVCaptureVideoDataOutput` delegate, two consumers**: both the Companion live-preview
   streamer and the synthetic cinematic compositor need every camera frame, but
   `AVCaptureVideoDataOutput` only supports a single delegate. `CameraKit/VideoFrameMultiplexer`

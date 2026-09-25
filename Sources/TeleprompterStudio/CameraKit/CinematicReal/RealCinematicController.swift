@@ -37,11 +37,8 @@ struct CinematicDetectedSubject: Identifiable, Equatable {
 /// Drives Apple's own hardware Cinematic Video capture, where the device supports it.
 ///
 /// Capability detection and the actual switch-on live in `CinematicVideoSupport` +
-/// `AVCameraSession`, which reach the API through the Objective-C runtime — the build toolchain's
-/// SDK doesn't declare it, but the OS on the device does. This type is the app-facing state:
-/// whether it's on, which subjects the system has detected, and which one focus is locked to.
-/// `SyntheticCinematicPipeline` remains the fallback whenever the hardware path isn't available or
-/// the OS declines it.
+/// `AVCameraSession`. This type is the app-facing state: whether it's on, which subjects the
+/// system has detected, and which one focus is locked to.
 @MainActor
 @Observable
 final class RealCinematicController {

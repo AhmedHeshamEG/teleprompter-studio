@@ -5,7 +5,8 @@ import UIKit
 struct CameraPreviewView: UIViewRepresentable {
     let cameraSession: AVCameraSession
     var onTap: ((CGPoint) -> Void)?
-    var onPinch: ((CGFloat) -> Void)?
+    /// `(began, scale)`: `scale` is relative to where the pinch started.
+    var onPinch: ((Bool, CGFloat) -> Void)?
     /// Live Cinematic subject metadata, when the hardware path is running. Drawn here rather than
     /// in SwiftUI because placing a rectangle correctly over a rotated, mirrored,
     /// `resizeAspectFill` preview is exactly what `transformedMetadataObject(for:)` is for — and
@@ -51,8 +52,7 @@ struct CameraPreviewView: UIViewRepresentable {
     final class Coordinator: NSObject {
         weak var view: PreviewUIView?
         var onTap: ((CGPoint) -> Void)?
-        var onPinch: ((CGFloat) -> Void)?
-        var pinchStartZoom: CGFloat = 1.0
+        var onPinch: ((Bool, CGFloat) -> Void)?
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let view else { return }
@@ -62,7 +62,11 @@ struct CameraPreviewView: UIViewRepresentable {
         }
 
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-            onPinch?(gesture.scale)
+            switch gesture.state {
+            case .began: onPinch?(true, gesture.scale)
+            case .changed: onPinch?(false, gesture.scale)
+            default: break
+            }
         }
     }
 

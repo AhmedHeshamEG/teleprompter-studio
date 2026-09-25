@@ -69,9 +69,22 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
 
     private(set) var facing: CameraFacing = .back
     private(set) var isConfigured = false
+    /// Zoom, in the numbers the stock Camera app shows: 1× is the main wide lens, 0.5× the
+    /// ultra-wide, 2×/3×/5× the telephoto. Not raw `videoZoomFactor` — on the multi-lens virtual
+    /// cameras this app opens, a raw factor of 1.0 *is the ultra-wide*, which is why the camera
+    /// used to open at 0.5×. See `zoomBaseline`.
     private(set) var currentZoom: CGFloat = 1.0
     private(set) var minZoom: CGFloat = 1.0
-    private(set) var maxZoom: CGFloat = 4.0
+    private(set) var maxZoom: CGFloat = 1.0
+    /// The lens stops worth a one-tap jump (e.g. 0.5, 1, 2, 3), in the same units.
+    private(set) var zoomPresets: [CGFloat] = [1]
+
+    /// Raw `videoZoomFactor` that corresponds to 1×: the first lens switch-over on a virtual
+    /// camera that includes the ultra-wide, 1 otherwise. Session-queue state.
+    private var zoomBaseline: CGFloat = 1
+    /// Last zoom asked for, in display units. Kept across camera flips, format changes and
+    /// Cinematic switching, all of which reset the device's own zoom. Session-queue state.
+    private var requestedZoom: CGFloat = 1
     private(set) var torchOn: Bool = false
 
     /// Live "which way is up" angles from `AVCaptureDevice.RotationCoordinator`, kept in sync
@@ -144,9 +157,8 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     /// rotation is locked and the phone is turned.
     var onRotationAnglesChanged: ((CGFloat, CGFloat) -> Void)?
 
-    /// Frames delegate for the synthetic cinematic pipeline / live preview streaming to hook into.
+    /// Frames delegate for the Companion live-preview stream to hook into.
     weak var videoDataDelegate: AVCaptureVideoDataOutputSampleBufferDelegate?
-    weak var audioDataDelegate: AVCaptureAudioDataOutputSampleBufferDelegate?
 
     private var videoDeviceInput: AVCaptureDeviceInput?
     private var audioDeviceInput: AVCaptureDeviceInput?
@@ -154,21 +166,21 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     private var rotationObservations: [NSKeyValueObservation] = []
     let movieFileOutput = AVCaptureMovieFileOutput()
     let videoDataOutput = AVCaptureVideoDataOutput()
-    let audioDataOutput = AVCaptureAudioDataOutput()
     private let dataOutputQueue = DispatchQueue(label: "studio.camera.dataOutput")
 
-    /// Whether the raw-frame taps (`videoDataOutput`/`audioDataOutput`) are attached to the
-    /// session. **Off by default.** These outputs are only needed by the two features that consume
-    /// individual frames — the synthetic cinematic pipeline and the Companion preview stream — but
-    /// they used to be attached unconditionally, so every ordinary session paid for a second
+    /// Whether the raw-frame tap (`videoDataOutput`) is attached to the session. **Off by
+    /// default.** It is only needed by the Companion preview stream, but it used to be attached
+    /// unconditionally, so every ordinary session paid for a second
     /// full-rate video path (and a per-frame delegate hop) that nothing was reading. On a 1080p60
     /// session that is a large, permanent tax on memory bandwidth and thermals, which is exactly
     /// what "the whole app feels laggy / buttons need several taps" looks like from the outside:
     /// the main thread competing with a capture pipeline that is doing pointless work.
     private var dataOutputsEnabled = false
 
-    /// Whether **Apple's own Cinematic Video capture** can run on this device: the OS knows the
-    /// API and the active camera has at least one Cinematic-capable format.
+    /// Whether **Apple's own Cinematic Video capture** can run on the current side (back/front):
+    /// the OS has the API and a camera on that side has a Cinematic-capable format. That camera
+    /// isn't necessarily the one in use — Cinematic runs on the Dual Wide / TrueDepth camera, and
+    /// the session swaps to it when the effect is switched on.
     ///
     /// Resolved once per configuration (see `configureSessionSync`) rather than computed on
     /// demand, because it's read from SwiftUI bodies and enumerating every camera format is not
@@ -177,8 +189,8 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     private(set) var isCinematicSupported = false
 
     /// Whether Cinematic capture is currently switched on *and the OS accepted it*. This is the
-    /// honest answer, not the requested one: if the format can't do it, this stays `false` and the
-    /// app falls back to the synthetic effect instead of pretending.
+    /// honest answer, not the requested one: if the camera can't do it, this stays `false` and the
+    /// app says so instead of pretending.
     private(set) var isCinematicActive = false
 
     /// Requested Cinematic state, applied on the session queue and re-applied whenever the format
@@ -256,7 +268,13 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         metadataOutputAttached = false
         stopSceneMonitoring()
 
-        guard let videoDevice = Self.device(for: facing) else {
+        // Cinematic only runs on specific cameras (back Dual Wide, front TrueDepth) — the Triple
+        // camera this app otherwise prefers has no Cinematic formats, which is why switching it on
+        // used to land on the fake effect. Pick the camera for the job.
+        let position: AVCaptureDevice.Position = facing == .back ? .back : .front
+        let cinematicDevice = CinematicVideoSupport.cinematicDevice(for: position)
+        let chosenDevice = wantsCinematic ? (cinematicDevice ?? Self.device(for: facing)) : Self.device(for: facing)
+        guard let videoDevice = chosenDevice else {
             throw CameraSessionError.noDeviceAvailable
         }
         let videoInput = try AVCaptureDeviceInput(device: videoDevice)
@@ -287,20 +305,71 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         applyMirroring(facing: facing)
         setUpRotationCoordinator(for: videoDevice)
 
-        let cinematicSupported = CinematicVideoSupport.isSupported(by: videoDevice)
+        // Before Cinematic is applied: that path re-applies zoom too, and needs the right baseline.
+        zoomBaseline = Self.zoomBaseline(for: videoDevice)
+
+        let cinematicSupported = cinematicDevice != nil
         DispatchQueue.main.async {
             self.facing = facing
-            self.minZoom = videoDevice.minAvailableVideoZoomFactor
-            self.maxZoom = min(videoDevice.maxAvailableVideoZoomFactor, 8)
             self.isCinematicSupported = cinematicSupported
         }
 
         // Flipping the camera rebuilds the input, so a Cinematic session has to be re-established
         // on the new device rather than silently dropping to a plain one.
-        if wantsCinematic, cinematicSupported {
+        if wantsCinematic, CinematicVideoSupport.isSupported(by: videoDevice) {
             applyCinematicSync(true, device: videoDevice, input: videoInput)
         } else if wantsCinematic {
-            DispatchQueue.main.async { self.isCinematicActive = false }
+            failCinematic(CinematicVideoSupport.isAvailableOnThisOS
+                ? "This iPhone's \(facing == .back ? "back" : "front") camera can't shoot Apple Cinematic."
+                : "Apple Cinematic needs iOS 26 or later.")
+        }
+        applyZoomSync(device: videoDevice)
+    }
+
+    // MARK: Zoom
+
+    /// Raw zoom factor that shows what the stock Camera app calls 1×.
+    private static func zoomBaseline(for device: AVCaptureDevice) -> CGFloat {
+        guard device.isVirtualDevice,
+              device.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }),
+              let first = device.virtualDeviceSwitchOverVideoZoomFactors.first
+        else { return 1 }
+        return CGFloat(truncating: first)
+    }
+
+    /// Pushes `requestedZoom` onto the device, clamped to what it can do right now, and publishes
+    /// the result. Must run on `sessionQueue`. Called after anything that resets the device's
+    /// zoom — a new device, a new format, Cinematic switching on or off.
+    private func applyZoomSync(device: AVCaptureDevice) {
+        let baseline = zoomBaseline
+        let lowest = device.minAvailableVideoZoomFactor
+        // Past 10× digital zoom is mush on a talking head.
+        let highest = max(lowest, min(device.maxAvailableVideoZoomFactor, baseline * 10))
+        let factor = max(lowest, min(requestedZoom * baseline, highest))
+        if abs(device.videoZoomFactor - factor) > 0.001, (try? device.lockForConfiguration()) != nil {
+            device.videoZoomFactor = factor
+            device.unlockForConfiguration()
+        }
+
+        var presets: [CGFloat] = []
+        if lowest < baseline - 0.01 { presets.append(lowest / baseline) }
+        presets.append(1)
+        for switchOver in device.virtualDeviceSwitchOverVideoZoomFactors {
+            let stop = CGFloat(truncating: switchOver) / baseline
+            if stop > 1.01, stop * baseline <= highest { presets.append(stop) }
+        }
+        // A 2× crop, like the stock app offers even on phones with no 2× lens.
+        if !presets.contains(where: { abs($0 - 2) < 0.05 }), 2 * baseline <= highest { presets.append(2) }
+        presets.sort()
+
+        let display = factor / baseline
+        let minDisplay = lowest / baseline
+        let maxDisplay = highest / baseline
+        DispatchQueue.main.async {
+            self.currentZoom = display
+            self.minZoom = minDisplay
+            self.maxZoom = maxDisplay
+            if self.zoomPresets != presets { self.zoomPresets = presets }
         }
     }
 
@@ -326,11 +395,11 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         }
 
         guard CinematicVideoSupport.isAvailableOnThisOS else {
-            failCinematic("Cinematic capture needs iOS 26 or later. Using the simulated effect instead.")
+            failCinematic("Apple Cinematic needs iOS 26 or later.")
             return
         }
         guard let format = CinematicVideoSupport.bestFormat(for: device, resolution: lastResolution, fps: 30) else {
-            failCinematic("This camera has no Cinematic-capable format. Using the simulated effect instead.")
+            failCinematic("This camera has no Cinematic format.")
             return
         }
         if device.activeFormat != format {
@@ -346,7 +415,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         guard accepted else {
             // Leave the session in a clean non-Cinematic state rather than half-configured.
             CinematicVideoSupport.setEnabled(false, on: input)
-            failCinematic("The system declined Cinematic capture for this camera configuration.")
+            failCinematic("iOS declined Cinematic for this camera setup.")
             return
         }
 
@@ -357,6 +426,8 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         }
         CinematicVideoSupport.setSimulatedAperture(Float(requestedAperture), on: input)
         startSceneMonitoring(device: device)
+        // The Cinematic format switch reset the zoom; put 1× (or whatever was chosen) back.
+        applyZoomSync(device: device)
 
         DispatchQueue.main.async {
             self.isCinematicActive = true
@@ -365,7 +436,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
     }
 
     /// Records why the hardware path didn't engage and leaves `isCinematicActive` false, which is
-    /// what makes `CameraStudioViewModel` fall back to the synthetic pipeline.
+    /// what makes `CameraStudioViewModel` switch the Cinematic button back off and say why.
     private func failCinematic(_ reason: String) {
         DispatchQueue.main.async {
             self.isCinematicActive = false
@@ -383,12 +454,9 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         }
         metadataOutput.setMetadataObjectsDelegate(cinematicMetadataDelegate, queue: dataOutputQueue)
         if let types = CinematicVideoSupport.requiredMetadataObjectTypes(for: metadataOutput) {
-            // Intersected with what this session will actually vend: assigning a type the output
-            // doesn't list as available raises, and the required set is the system's ideal rather
-            // than a promise about this particular configuration.
-            let available = Set(metadataOutput.availableMetadataObjectTypes)
-            let usable = types.filter { available.contains($0) }
-            if !usable.isEmpty { metadataOutput.metadataObjectTypes = usable }
+            // Exactly the required list, as Apple's sample does: while Cinematic is on, any other
+            // set of types raises.
+            metadataOutput.metadataObjectTypes = types
         }
     }
 
@@ -408,9 +476,7 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         timer.schedule(deadline: .now() + 1.5, repeating: 1.5)
         timer.setEventHandler { [weak self, weak device] in
             guard let self, let device else { return }
-            let statuses = CinematicVideoSupport.sceneMonitoringStatuses(for: device)
-            let needsLight = statuses.contains { $0.lowercased().contains("light") }
-            let warning = needsLight ? "More light needed for a clean Cinematic effect." : nil
+            let warning = CinematicVideoSupport.needsMoreLight(device) ? "More light needed for a clean Cinematic effect." : nil
             DispatchQueue.main.async {
                 if self.cinematicSceneWarning != warning { self.cinematicSceneWarning = warning }
             }
@@ -479,7 +545,6 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
                 self.attachDataOutputsSync()
             } else {
                 self.captureSession.removeOutput(self.videoDataOutput)
-                self.captureSession.removeOutput(self.audioDataOutput)
             }
             self.captureSession.commitConfiguration()
             if enabled {
@@ -498,11 +563,6 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         videoDataOutput.setSampleBufferDelegate(videoDataDelegate, queue: dataOutputQueue)
         if captureSession.canAddOutput(videoDataOutput) {
             captureSession.addOutput(videoDataOutput)
-        }
-
-        audioDataOutput.setSampleBufferDelegate(audioDataDelegate, queue: dataOutputQueue)
-        if captureSession.canAddOutput(audioDataOutput) {
-            captureSession.addOutput(audioDataOutput)
         }
     }
 
@@ -677,6 +737,8 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
                 actual: chosen,
                 actualFPS: chosenFPS
             )
+            // A new format resets the zoom factor, which would drop a 1× camera back to 0.5×.
+            self.applyZoomSync(device: device)
             // Format changes rebuild connections, so rotation and mirroring have to be re-applied.
             self.applyMirroring(facing: self.facing)
             self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
@@ -753,13 +815,15 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
         device.unlockForConfiguration()
     }
 
+    /// Sets zoom in display units (1 = 1×, 0.5 = ultra-wide). Applied on the session queue like
+    /// every other device change; `currentZoom` follows once it has taken.
     func setZoom(_ factor: CGFloat) {
-        guard let device = videoDeviceInput?.device else { return }
-        let clamped = max(minZoom, min(factor, maxZoom))
-        try? device.lockForConfiguration()
-        device.videoZoomFactor = clamped
-        device.unlockForConfiguration()
-        currentZoom = clamped
+        let target = max(minZoom, min(factor, maxZoom))
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDeviceInput?.device else { return }
+            self.requestedZoom = target
+            self.applyZoomSync(device: device)
+        }
     }
 
     func focus(at devicePoint: CGPoint) {
@@ -786,21 +850,39 @@ final class AVCameraSession: CameraSessionProviding, @unchecked Sendable {
 
     /// Switches Apple's Cinematic Video capture on or off. Asynchronous by nature (it reconfigures
     /// the running session), so success is reported through `isCinematicActive` rather than by
-    /// returning — callers watch that to decide whether the real path is running or the synthetic
-    /// fallback should take over.
+    /// returning — callers watch that (and `cinematicUnavailableReason`) to learn whether it took.
     func setCinematicEnabled(_ enabled: Bool) throws {
         guard videoDeviceInput != nil else { throw CameraSessionError.noDeviceAvailable }
         guard !enabled || isCinematicSupported else {
             throw CameraSessionError.configurationFailed("Cinematic capture not supported on this camera")
         }
         wantsCinematic = enabled
+        // A reason left over from an earlier attempt would read as this attempt's answer.
+        cinematicUnavailableReason = nil
+        let currentFacing = facing
         sessionQueue.async { [weak self] in
             guard let self, let input = self.videoDeviceInput else { return }
-            self.captureSession.beginConfiguration()
-            self.applyCinematicSync(enabled, device: input.device, input: input)
-            self.captureSession.commitConfiguration()
+            // Cinematic has its own camera (Dual Wide / TrueDepth), so switching it on or off is a
+            // camera swap, not a flag flip — rebuild the session around the right device. When
+            // that device is already the one in use, the lighter in-place path is enough.
+            let position: AVCaptureDevice.Position = currentFacing == .back ? .back : .front
+            let wantedDevice = enabled
+                ? CinematicVideoSupport.cinematicDevice(for: position)
+                : Self.device(for: currentFacing)
+            if let wantedDevice, wantedDevice.uniqueID != input.device.uniqueID {
+                do {
+                    try self.configureSessionSync(facing: currentFacing)
+                } catch {
+                    self.failCinematic(error.localizedDescription)
+                }
+            } else {
+                self.captureSession.beginConfiguration()
+                self.applyCinematicSync(enabled, device: input.device, input: input)
+                self.captureSession.commitConfiguration()
+                self.applyZoomSync(device: input.device)
+            }
             // A format swap rebuilds connections; rotation and mirroring have to be pushed back on.
-            self.applyMirroring(facing: self.facing)
+            self.applyMirroring(facing: currentFacing)
             self.applyRotationAngles(preview: self.lastPreviewAngle, capture: self.lastCaptureAngle)
             if !enabled {
                 // Back to whatever resolution the user actually picked.

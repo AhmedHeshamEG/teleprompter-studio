@@ -34,10 +34,11 @@ struct StudioSettingsSheet: View {
 
                 Section {
                     Toggle("Rule-of-Thirds Grid", isOn: $viewModel.showGrid)
+                    Toggle("Zoom Control", isOn: $viewModel.isZoomControlEnabled)
                 } header: {
                     Text("Framing")
                 } footer: {
-                    Text("Shows a 3×3 composition grid over the camera preview. It's never recorded into the video.")
+                    Text("The grid is never recorded into the video. The camera always opens at 1×; Zoom Control adds pinch-to-zoom and a lens button (0.5×, 1×, 2×…) next to Cinematic. Turning it off puts the camera back to 1×.")
                 }
 
                 Section {
@@ -103,15 +104,14 @@ struct StudioSettingsSheet: View {
                 }
 
                 if viewModel.cinematicMode == .cinematic {
-                    Section(viewModel.resolvedCinematicKind == .real ? "Cinematic (Hardware)" : "Cinematic (Simulated)") {
+                    Section("Cinematic") {
                         if viewModel.resolvedCinematicKind == .real {
                             Picker("Focus Style", selection: $viewModel.realCinematic.focusMode) {
                                 Text("Auto").tag(CinematicFocusMode.none)
                                 Text("Strong Rack").tag(CinematicFocusMode.strong)
                                 Text("Weak Rack").tag(CinematicFocusMode.weak)
                             }
-                            // The system's own simulated aperture, in f-stops — the hardware
-                            // equivalent of the synthetic path's blur amount.
+                            // Apple's simulated aperture, in f-stops: lower = blurrier background.
                             LabeledSlider(
                                 label: "Aperture",
                                 systemImage: "camera.aperture",
@@ -125,15 +125,9 @@ struct StudioSettingsSheet: View {
                                 range: viewModel.cinematicApertureRange
                             ) { String(format: "f/%.1f", $0) }
                         } else {
-                            LabeledSlider(
-                                label: "Aperture Blur",
-                                systemImage: "camera.aperture",
-                                value: Binding(
-                                    get: { viewModel.recordingCoordinator.synthetic.blurRadius },
-                                    set: { viewModel.recordingCoordinator.synthetic.setBlurRadius($0) }
-                                ),
-                                range: 0...60
-                            )
+                            Label("Switching the camera to Cinematic…", systemImage: "hourglass")
+                                .font(.footnote)
+                                .foregroundStyle(Theme.textSecondary)
                         }
                     }
                 }

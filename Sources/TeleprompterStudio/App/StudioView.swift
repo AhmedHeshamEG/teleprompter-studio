@@ -51,20 +51,10 @@ struct StudioView: View {
                     CameraPreviewView(
                         cameraSession: viewModel.session,
                         onTap: { viewModel.focus(at: $0) },
-                        onPinch: { viewModel.setZoom(viewModel.session.currentZoom * $0) },
+                        onPinch: { viewModel.handlePinch(began: $0, scale: $1) },
                         subjectRelay: viewModel.cinematicSubjectRelay
                     )
                     .ignoresSafeArea()
-
-                    // Live cinematic composite, drawn over the plain preview while the effect is
-                    // on. Before this, Cinematic changed nothing you could see until you played
-                    // back the file. Never takes touches, so focus/zoom still work underneath.
-                    if viewModel.resolvedCinematicKind == .synthetic {
-                        CinematicPreviewView(sink: viewModel.cinematicPreview)
-                            .ignoresSafeArea()
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
-                    }
 
                     if viewModel.showGrid { GridOverlay().ignoresSafeArea() }
                     // In its own view: tapping to focus wrote `focusPoint`, and reading that here
@@ -340,6 +330,9 @@ struct StudioView: View {
                     viewModel.toggleFacing()
                 }
                 StudioCinematicButton(viewModel: viewModel)
+                if viewModel.isZoomControlEnabled {
+                    StudioZoomButton(viewModel: viewModel)
+                }
             }
 
             // Never hidden: whatever else goes away, the take has to be startable and stoppable.
@@ -366,8 +359,7 @@ private struct StudioFocusReticle: View {
     }
 }
 
-/// "Cinematic" when Apple's hardware path is running, "Simulated Cinematic" when the effect is
-/// being produced in software — the distinction the user is entitled to see.
+/// "Cinematic" while Apple's Cinematic mode is running, plus the system's low-light warning.
 private struct StudioCinematicBadge: View {
     let viewModel: CameraStudioViewModel
 
@@ -387,9 +379,7 @@ private struct StudioCinematicBadge: View {
                 if let warning = viewModel.session.cinematicSceneWarning {
                     Badge(text: warning, color: Theme.warning)
                 }
-            case .synthetic:
-                Badge(text: "Simulated Cinematic", color: Theme.accent)
-            case .none:
+            case .none, .synthetic:
                 EmptyView()
             }
         }
@@ -407,6 +397,41 @@ private struct StudioCinematicButton: View {
         ) {
             viewModel.toggleCinematic()
         }
+    }
+}
+
+/// The lens button, the way the stock Camera app does it: shows the zoom you're at ("1×",
+/// "0.5×", "1.4×" mid-pinch) and a tap steps to the next lens stop. Only on screen when Zoom
+/// Control is switched on in Studio Settings. Its own view so a pinch — which updates the zoom
+/// many times a second — only redraws this label, not the Studio screen.
+private struct StudioZoomButton: View {
+    let viewModel: CameraStudioViewModel
+
+    var body: some View {
+        let zoom = viewModel.session.currentZoom
+        let size = Theme.minControlSizeCompact
+        Button {
+            viewModel.cycleZoomPreset()
+        } label: {
+            Text(Self.label(for: zoom))
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(abs(zoom - 1) < 0.01 ? Theme.textPrimary : Theme.accent)
+                .frame(width: size, height: size)
+                .background(Color.black.opacity(0.45), in: Circle())
+                .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Zoom \(Self.label(for: zoom))")
+    }
+
+    /// "1×", "2×", "0.5×", "1.4×" — whole numbers without a decimal, like the stock app.
+    static func label(for zoom: CGFloat) -> String {
+        let rounded = (zoom * 10).rounded() / 10
+        if abs(rounded - rounded.rounded()) < 0.01 { return "\(Int(rounded.rounded()))×" }
+        return String(format: "%.1f×", rounded)
     }
 }
 

@@ -7,9 +7,9 @@ enum CinematicMode: String, CaseIterable {
     case cinematic
 }
 
-/// Chooses between the plain/real-cinematic `MovieFileRecorder` path and the
-/// `SyntheticCinematicPipeline` path based on device capability + user toggle, and persists the
-/// finished take as a `Recording` model + optional Photos save.
+/// Records through `MovieFileRecorder` — plain or Apple Cinematic, which is the same movie-file
+/// path with Cinematic switched on in the session — and persists the finished take as a
+/// `Recording` model + optional Photos save.
 @MainActor
 @Observable
 final class RecordingCoordinator {
@@ -22,12 +22,8 @@ final class RecordingCoordinator {
     var onRecordingFailed: ((String) -> Void)?
 
     private var movieRecorder: MovieFileRecorder?
-    private let syntheticPipeline = SyntheticCinematicPipeline()
-    private var usingSynthetic = false
     private var elapsedTimer: Timer?
     private var recordingStartDate: Date?
-
-    var synthetic: SyntheticCinematicPipeline { syntheticPipeline }
 
     func start(
         session: AVCameraSession,
@@ -38,8 +34,7 @@ final class RecordingCoordinator {
         guard !isRecording else { return }
         guard session.captureSession.isRunning else { throw RecorderError.sessionNotRunning }
 
-        switch cinematicKind {
-        case .none, .real:
+        do {
             let recorder = MovieFileRecorder(output: session.movieFileOutput)
             recorder.onUnexpectedStop = { [weak self] error in
                 Task { @MainActor in
@@ -56,10 +51,6 @@ final class RecordingCoordinator {
             }
             _ = try recorder.start()
             movieRecorder = recorder
-            usingSynthetic = false
-        case .synthetic:
-            _ = try syntheticPipeline.start(dimensions: resolution.dimensions)
-            usingSynthetic = true
         }
 
         isRecording = true
@@ -81,9 +72,7 @@ final class RecordingCoordinator {
 
         do {
             let finishedURL: URL
-            if usingSynthetic {
-                finishedURL = try await syntheticPipeline.stop()
-            } else if let movieRecorder {
+            if let movieRecorder {
                 finishedURL = try await movieRecorder.stop()
             } else {
                 return
