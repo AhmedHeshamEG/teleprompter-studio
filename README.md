@@ -20,6 +20,18 @@ for the full story of how that worked and the tradeoffs it forced.
   of re-rendering the screen 60 times a second. One button sweeps every other control off the display
   (leaving the script, the transport, the take timer and the record button), and in landscape the
   chrome lives in side rails, because a landscape iPhone has ~390 points of height and none to spare.
+- **Voice mode** — the same script and prompter with the camera swapped for a voice recorder:
+  Apple Lossless (ALAC) at 48 kHz / 24-bit via `AVAudioRecorder`, a live level meter, a mic picker
+  for wired/USB mics, full-quality AirPods recording on iOS 26, and takes that keep recording if the
+  screen is locked. Takes land in the Files app (On My iPhone → Teleprompter Studio → Recordings)
+  and can be played back or shared straight from the screen.
+- **Notebook scripts** — drop photos into a script from the editor's toolbar; they show inline in the
+  editor, on the prompter (centred, sized to the card) and in the laptop editor's preview. Lines
+  starting with `>` are *cues*, set smaller in the script's accent colour so a stage direction never
+  reads as a line to say. Pictures live in the Markdown as `![](tp-image:…)` links, so no stored
+  script changed shape.
+- **The phone stays awake** while Studio, Voice or Companion is open — a phone on a tripod gets no
+  touches, and auto-lock used to end the take.
 - **Dyslexia-friendly typesetting** — bundled [OpenDyslexic](https://opendyslexic.org) (SIL OFL),
   selectable per script from Studio Settings or the editor's Style panel, with line spacing derived from
   the font's own metrics.
