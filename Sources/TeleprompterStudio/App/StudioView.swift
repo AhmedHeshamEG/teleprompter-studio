@@ -254,7 +254,7 @@ struct StudioView: View {
             ForEach(StudioRunMode.allCases, id: \.self) { mode in
                 let isSelected = viewModel.runMode == mode
                 Button {
-                    withAnimation(Theme.quickSpring) { viewModel.runMode = mode }
+                    viewModel.runMode = mode
                 } label: {
                     Text(mode.rawValue.uppercased())
                         .font(.system(size: 13, weight: .semibold))

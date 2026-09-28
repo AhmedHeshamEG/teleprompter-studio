@@ -203,7 +203,9 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
         // size alone left its lines visibly touching at the same "1.4x" the system font read fine
         // at.
         paragraph.lineSpacing = max(0, (lineHeight - 1) * font.lineHeight)
-        paragraph.alignment = .left
+        // `.natural`, not `.left`: each paragraph aligns to its own script, so an Arabic line
+        // reads from the right margin and an English one from the left, in the same script.
+        paragraph.alignment = .natural
         attributedText = Self.typeset(
             text.isEmpty ? " " : text,
             font: font,
