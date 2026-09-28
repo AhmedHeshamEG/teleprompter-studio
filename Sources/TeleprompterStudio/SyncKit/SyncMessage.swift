@@ -9,6 +9,10 @@ enum SyncRole: String, Codable, Sendable {
 /// than separate reliable/unreliable channels) so both sides share one decode path; the sender
 /// picks `MCSessionSendDataMode` per case in `SyncCoordinator`.
 enum SyncMessage: Codable, Sendable {
+    /// Script pictures travel as MultipeerConnectivity resources (files), not inside a message,
+    /// named with this prefix plus their `ScriptImageStore` ID.
+    static let imageResourcePrefix = "tp-image:"
+
     case roleAnnounce(SyncRole)
 
     case scriptSync(title: String, markdown: String, style: SyncStyleSnapshot)
