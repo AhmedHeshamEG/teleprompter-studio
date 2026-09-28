@@ -27,6 +27,7 @@ struct NativePrompterView: View {
                 fontSize: controller.fontSize,
                 lineHeight: document.lineHeight,
                 textColor: UIColor(HexColor.color(document.textColorHex)),
+                cueColor: UIColor(HexColor.color(document.accentColorHex)),
                 marginHorizontalPercent: document.marginHorizontalPercent,
                 isPlaying: controller.isPlaying,
                 speedPxPerSec: controller.speedPxPerSec,

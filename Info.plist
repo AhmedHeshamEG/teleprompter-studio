@@ -6,7 +6,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Teleprompter Studio uses the camera to show your live preview under the scrolling script and to record your takes.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Teleprompter Studio uses the microphone to record audio with your video takes.</string>
+	<string>Teleprompter Studio uses the microphone to record audio with your video takes and to record voice takes.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Teleprompter Studio saves your finished recordings to your Photos library.</string>
 
@@ -19,6 +19,19 @@
 		<string>_tpsync._udp</string>
 		<string>_tpweb._tcp</string>
 	</array>
+
+	<!-- Voice takes keep recording if the screen is locked with the side button mid-take. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+
+	<!-- Finished takes (Documents/Recordings) show up in the Files app under "On My iPhone". Voice
+	     takes can't go to Photos, so this is how they get off the phone. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 
 	<!-- No proprietary/non-exempt encryption beyond standard OS-provided TLS. -->
 	<key>ITSAppUsesNonExemptEncryption</key>

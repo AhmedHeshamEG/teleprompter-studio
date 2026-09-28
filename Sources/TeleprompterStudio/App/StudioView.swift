@@ -85,6 +85,9 @@ struct StudioView: View {
             .animation(Theme.quickSpring, value: chromeVisible)
         }
         .statusBarHidden()
+        // A phone on a tripod gets no touches, so iOS used to count a running take as "idle" and
+        // lock the screen — which stops the camera session with it.
+        .keepsScreenAwake()
         .task {
             viewModel.attach(syncCoordinator: appState.syncCoordinator, modelContext: modelContext)
             appState.isStudioActive = true
@@ -244,12 +247,29 @@ struct StudioView: View {
         .padding(.top, isCompactHeight ? Theme.spacingS : Theme.spacingM)
     }
 
+    /// The stock Camera app's mode dial, as words on glass: the live mode in yellow, the other one
+    /// a tap away. Each word is a full 44pt-tall target, not just its letters.
     private var modePicker: some View {
-        Picker("Mode", selection: $viewModel.runMode) {
-            ForEach(StudioRunMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        HStack(spacing: 0) {
+            ForEach(StudioRunMode.allCases, id: \.self) { mode in
+                let isSelected = viewModel.runMode == mode
+                Button {
+                    withAnimation(Theme.quickSpring) { viewModel.runMode = mode }
+                } label: {
+                    Text(mode.rawValue.uppercased())
+                        .font(.system(size: 13, weight: .semibold))
+                        .tracking(1.2)
+                        .foregroundStyle(isSelected ? Theme.accent : Theme.textSecondary)
+                        .padding(.horizontal, Theme.spacingM)
+                        .frame(minHeight: Theme.minControlSizeCompact)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
         }
-        .pickerStyle(.segmented)
-        .frame(maxWidth: 240)
+        .padding(.horizontal, Theme.spacingXS)
+        .chromeGlass(in: Capsule(), interactive: false)
     }
 
     /// Auto → Portrait → Landscape, on screen instead of three taps deep in the settings sheet.
@@ -264,12 +284,15 @@ struct StudioView: View {
     /// visible instead of swallowed. The prompter text no longer depends on the camera at all,
     /// so this only ever affects the camera preview/recording, never the script.
     private func cameraErrorBanner(_ message: String) -> some View {
-        Label(message, systemImage: "exclamationmark.triangle.fill")
+        Label {
+            Text(message).foregroundStyle(Theme.textPrimary)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warning)
+        }
             .font(.footnote.weight(.medium))
-            .foregroundStyle(.black)
             .padding(.horizontal, Theme.spacingM)
             .padding(.vertical, Theme.spacingS)
-            .background(Theme.accent, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium))
+            .chromeGlass(in: RoundedRectangle(cornerRadius: Theme.cornerRadiusMedium, style: .continuous), interactive: false)
             .padding(.horizontal, Theme.spacingM)
             .contentShape(Rectangle())
             .onTapGesture { viewModel.errorMessage = nil }
@@ -418,8 +441,7 @@ private struct StudioZoomButton: View {
                 .monospacedDigit()
                 .foregroundStyle(abs(zoom - 1) < 0.01 ? Theme.textPrimary : Theme.accent)
                 .frame(width: size, height: size)
-                .background(Color.black.opacity(0.45), in: Circle())
-                .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                .chromeGlass(in: Circle())
                 .frame(width: 48, height: 48)
                 .contentShape(Circle())
         }
@@ -489,43 +511,6 @@ private struct StudioRecordingIndicator: View {
 
     var body: some View {
         RecordingIndicator(isRecording: coordinator.isRecording, elapsed: coordinator.elapsed)
-    }
-}
-
-private struct RecordButton: View {
-    let isRecording: Bool
-    /// Countdown is running: the button pulses so the tap clearly registered, and tapping again
-    /// calls the take off instead of doing nothing for three seconds.
-    var isArmed: Bool = false
-    let action: () -> Void
-
-    @State private var pulse = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                Circle()
-                    .stroke(isArmed ? Theme.accent : Color.white, lineWidth: 4)
-                    .frame(width: 76, height: 76)
-                RoundedRectangle(cornerRadius: isRecording ? 8 : 30)
-                    .fill(Theme.record)
-                    .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
-                    .opacity(isArmed && pulse ? 0.35 : 1)
-                    .animation(Theme.quickSpring, value: isRecording)
-            }
-            // The 76pt ring is the visual; this is the touch target, so the edges of the button
-            // aren't dead zones.
-            .frame(width: 88, height: 88)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .onChange(of: isArmed) { _, armed in
-            if armed {
-                withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { pulse = true }
-            } else {
-                withAnimation(.default) { pulse = false }
-            }
-        }
     }
 }
 

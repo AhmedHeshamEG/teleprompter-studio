@@ -37,8 +37,9 @@ final class Script {
         self.updatedAt = Date()
     }
 
+    /// Words actually read aloud — picture links (see `ScriptImageMarkup`) aren't words.
     var wordCount: Int {
-        bodyMarkdown.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+        ScriptImageMarkup.strippingImages(from: bodyMarkdown).split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
     }
 
     /// Estimated read time at an average conversational prompter pace of ~135 WPM.
@@ -47,7 +48,7 @@ final class Script {
     }
 
     var firstLine: String {
-        let stripped = bodyMarkdown
+        let stripped = ScriptImageMarkup.strippingImages(from: bodyMarkdown)
             .split(separator: "\n")
             .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
             ?? ""

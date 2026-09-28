@@ -1,3 +1,5 @@
+import PhotosUI
+import UIKit
 import SwiftUI
 import SwiftData
 
@@ -9,6 +11,9 @@ struct EditorView: View {
     @State private var selectedRange = NSRange(location: 0, length: 0)
     @State private var showingStylePanel = false
     @State private var showingStudio = false
+    @State private var showingVoiceStudio = false
+    @State private var showingPhotoPicker = false
+    @State private var pickedPhoto: PhotosPickerItem?
     @State private var saveWorkItem: DispatchWorkItem?
     /// Must stay stable across body re-evaluations (every keystroke) so scroll/play state
     /// doesn't reset on every edit.
@@ -23,9 +28,10 @@ struct EditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            EditorToolbar { transform in
-                applyFormat(transform)
-            }
+            EditorToolbar(
+                apply: { transform in applyFormat(transform) },
+                insertPicture: { showingPhotoPicker = true }
+            )
 
             GeometryReader { proxy in
                 if proxy.size.width > 700 {
@@ -56,6 +62,12 @@ struct EditorView: View {
                 } label: {
                     Image(systemName: "textformat.size.larger")
                 }
+                // Same script, no camera: a full-screen prompter over a lossless voice recorder.
+                Button {
+                    showingVoiceStudio = true
+                } label: {
+                    Label("Voice", systemImage: "mic.fill")
+                }
                 Button {
                     showingStudio = true
                 } label: {
@@ -64,6 +76,12 @@ struct EditorView: View {
                 .tint(Theme.accent)
             }
         }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $pickedPhoto, matching: .images)
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            pickedPhoto = nil
+            Task { await insertPicture(from: item) }
+        }
         .sheet(isPresented: $showingStylePanel) {
             StylePanelView(style: style)
                 .presentationDetents([.medium, .large])
@@ -71,6 +89,9 @@ struct EditorView: View {
         .fullScreenCover(isPresented: $showingStudio) {
             StudioView(script: script)
                 .environment(appState)
+        }
+        .fullScreenCover(isPresented: $showingVoiceStudio) {
+            VoiceStudioView(script: script)
         }
         .onChange(of: script.bodyMarkdown) { _, _ in scheduleSave() }
     }
@@ -94,6 +115,20 @@ struct EditorView: View {
         script.bodyMarkdown = result.text
         selectedRange = result.selection
         scheduleSave()
+    }
+
+    /// Copies the picked photo into the script's picture store and drops its link on a line of its
+    /// own at the cursor. The editor then shows it as the picture, the prompter as the picture.
+    private func insertPicture(from item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: data),
+              // Off the main thread: downscaling a 48MP photo is not a keystroke-sized job.
+              let id = try? await Task.detached(priority: .userInitiated, operation: { try ScriptImageStore.save(image) }).value
+        else { return }
+        let token = ScriptImageMarkup.token(for: id)
+        applyFormat { text, range in
+            MarkdownFormatter.insertOnOwnLine(text: text, range: range, block: token)
+        }
     }
 
     private func scheduleSave() {

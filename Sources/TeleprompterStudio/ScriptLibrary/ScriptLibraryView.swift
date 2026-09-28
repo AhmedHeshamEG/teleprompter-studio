@@ -80,9 +80,9 @@ struct ScriptLibraryView: View {
                         Label("New Folder", systemImage: "folder.badge.plus")
                     }
                 } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title2)
+                    Image(systemName: "square.and.pencil")
                 }
+                .accessibilityLabel("New Script")
             }
             ToolbarItem(placement: .navigationBarLeading) {
                 Button {
@@ -136,10 +136,11 @@ struct ScriptLibraryView: View {
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.medium))
-                .padding(.horizontal, Theme.spacingM)
-                .padding(.vertical, 6)
-                .background(isSelected ? Theme.accent : Theme.surface, in: Capsule())
+                .padding(.horizontal, 14)
+                .frame(minHeight: 34)
+                .background(isSelected ? Color.white : Theme.surface, in: Capsule())
                 .foregroundStyle(isSelected ? .black : Theme.textPrimary)
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
     }

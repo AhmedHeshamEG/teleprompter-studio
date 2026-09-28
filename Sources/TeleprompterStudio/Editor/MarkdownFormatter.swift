@@ -86,6 +86,23 @@ enum MarkdownFormatter {
         toggleWrap(text: text, range: range, prefix: "$", suffix: "$")
     }
 
+    /// Puts `block` on a line of its own at the cursor (replacing any selection), with the cursor
+    /// left on the line after it — used for script pictures, which always sit on their own line.
+    static func insertOnOwnLine(text: String, range: NSRange, block: String) -> Result {
+        let ns = text as NSString
+        let safeRange = ns.clampedRange(range)
+        let needsLeadingBreak = safeRange.location > 0
+            && ns.substring(with: NSRange(location: safeRange.location - 1, length: 1)) != "\n"
+        let end = safeRange.location + safeRange.length
+        let needsTrailingBreak = end >= ns.length
+            || ns.substring(with: NSRange(location: end, length: 1)) != "\n"
+        let replacement = (needsLeadingBreak ? "\n" : "") + block + (needsTrailingBreak ? "\n" : "")
+        let newText = ns.replacingCharacters(in: safeRange, with: replacement)
+        var cursor = safeRange.location + (replacement as NSString).length
+        if !needsTrailingBreak { cursor += 1 }
+        return Result(text: newText, selection: NSRange(location: min(cursor, (newText as NSString).length), length: 0))
+    }
+
     static func insertBlockMath(text: String, range: NSRange) -> Result {
         let ns = text as NSString
         let safeRange = ns.clampedRange(range)

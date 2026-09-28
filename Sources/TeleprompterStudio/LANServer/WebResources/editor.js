@@ -50,7 +50,8 @@
 
   function renderPreview() {
     const html = window.marked ? window.marked.parse(markdownInput.value || "") : "";
-    preview.innerHTML = html;
+    // Pictures placed in the app are stored as tp-image: links; serve them from the phone.
+    preview.innerHTML = html.replace(/src="tp-image:/g, 'src="/api/images/');
     if (window.renderMathInElement) {
       renderMathInElement(preview, {
         delimiters: [
