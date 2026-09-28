@@ -20,11 +20,15 @@ for the full story of how that worked and the tradeoffs it forced.
   of re-rendering the screen 60 times a second. One button sweeps every other control off the display
   (leaving the script, the transport, the take timer and the record button), and in landscape the
   chrome lives in side rails, because a landscape iPhone has ~390 points of height and none to spare.
-- **Voice mode** — the same script and prompter with the camera swapped for a voice recorder:
-  Apple Lossless (ALAC) at 48 kHz / 24-bit via `AVAudioRecorder`, a live level meter, a mic picker
-  for wired/USB mics, full-quality AirPods recording on iOS 26, and takes that keep recording if the
-  screen is locked. Takes land in the Files app (On My iPhone → Teleprompter Studio → Recordings)
-  and can be played back or shared straight from the screen.
+- **Voice mode**: the same script and prompter with the camera swapped for a recorder built like
+  Voice Memos. It has a live waveform, a clock to the hundredth of a second, pause/resume into the
+  same file, and discard. Each script has a takes list with a scrubbable waveform player (±5 s,
+  playback speed, rename, share, swipe to delete), and playback shows up on the Lock Screen and in
+  Control Center via Now Playing. Recording is Apple Lossless (ALAC), 24-bit. You pick the mic in
+  Apple's own input picker on iOS 26, and AirPods record at full quality on iOS 26. **Voice
+  Isolation** is opt-in (off by default, in the ⋯ menu). Turning it on records through Apple's voice
+  processing, and the mode is set in the system's Mic Mode panel. Takes keep recording if the screen
+  locks, and they land in the Files app (On My iPhone → Teleprompter Studio → Recordings).
 - **Notebook scripts** — drop photos into a script from the editor's toolbar; they show inline in the
   editor, on the prompter (centred, sized to the card) and in the laptop editor's preview. Lines
   starting with `>` are *cues*, set smaller in the script's accent colour so a stage direction never
@@ -48,8 +52,13 @@ for the full story of how that worked and the tradeoffs it forced.
   those symbols yet, and reports *why* it fell back when the hardware path can't engage.
 - **Synthetic cinematic fallback** everywhere else: live Vision person segmentation + Core Image
   background blur, composited frame-by-frame and recorded with `AVAssetWriter`.
-- **Director/Companion sync** — mirror the prompter and a live camera preview to a second iPhone/iPad over
-  the same Wi-Fi with **MultipeerConnectivity**: no internet, no login, no pairing code.
+- **Director/Companion sync**: mirror the prompter, its pictures and a live camera preview to a
+  second iPhone/iPad over **MultipeerConnectivity**. It works on the local network, with no internet,
+  no login and no pairing code. After you pair once, the two devices remember each other and relink
+  on their own, with no prompt. That happens at launch, whenever either app comes back to the
+  foreground, and through a retry watchdog. A Companion that was closed reopens as the Companion and
+  keeps its script on screen while the link comes back. (iOS doesn't let any app hold a link open
+  while it's closed or the phone is locked, so the link heals on reopen instead.)
 - **LAN script editor** — edit scripts from a laptop browser on the same network via a hand-rolled HTTP
   server built directly on Apple's `Network` framework (zero external dependencies), with an in-app QR
   code for the URL.

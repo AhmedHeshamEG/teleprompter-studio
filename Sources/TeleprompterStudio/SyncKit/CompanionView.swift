@@ -183,9 +183,7 @@ struct CompanionView: View {
         case .connecting: return "Connecting to the Director…"
         case .notConnected:
             if let name = coordinator.lastPeerName, coordinator.isReconnecting {
-                return "Reconnecting to \(name)…
-
-Open Teleprompter Studio on \(name). It links back by itself."
+                return "Reconnecting to \(name)…\n\nOpen Teleprompter Studio on \(name). It links back by itself."
             }
             return "Looking for a Director on this Wi-Fi network…\n\nOn the other device: Settings → Connect a Device, then tap this device's name."
         }
