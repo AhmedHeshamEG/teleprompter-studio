@@ -243,8 +243,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
         pictureParagraph.paragraphSpacing = font.lineHeight * 0.3
 
         let result = NSMutableAttributedString()
-        let lines = text.components(separatedBy: "
-")
+        let lines = text.components(separatedBy: "\n")
         for (index, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix(">") {
@@ -254,8 +253,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
                 appendLine(line, to: result, base: base, pictureParagraph: pictureParagraph)
             }
             if index < lines.count - 1 {
-                result.append(NSAttributedString(string: "
-", attributes: base))
+                result.append(NSAttributedString(string: "\n", attributes: base))
             }
         }
         return result
