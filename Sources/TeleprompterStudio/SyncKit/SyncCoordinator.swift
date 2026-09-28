@@ -127,6 +127,8 @@ final class SyncCoordinator: NSObject {
         if let data = defaults.data(forKey: Key.knownPeers),
            let peers = try? JSONDecoder().decode([KnownPeer].self, from: data) {
             knownPeers = peers
+            // After a relaunch, the device we're heading back to is the one we paired with last.
+            lastPeerName = peers.last?.name
         }
     }
 
@@ -190,8 +192,7 @@ final class SyncCoordinator: NSObject {
         if session.connectedPeers.isEmpty {
             // An MCSession that lost its peer while suspended can be left half-open, quietly
             // refusing new connections. A fresh one costs nothing when nobody is connected.
-            session.disconnect()
-            session = makeSession()
+            replaceSession()
         }
         startDiscovery()
     }
@@ -294,18 +295,30 @@ final class SyncCoordinator: NSObject {
         // Drop a live link to it too: "Forget" that leaves the device connected isn't forgetting.
         let linked = connectedPeers.filter { peerInstallIDs[$0] == known.id }
         if !linked.isEmpty {
-            session.disconnect()
-            session = makeSession()
+            replaceSession()
+            lastPeerName = nil
         }
+    }
+
+    /// Swaps in a fresh session. The old one's callbacks are ignored from here on (see
+    /// `peerStateChanged`), so its peers are cleared here rather than waiting for a
+    /// "not connected" that will never be listened to.
+    private func replaceSession() {
+        let hadPeers = hasConnectedPeers
+        session.disconnect()
+        session = makeSession()
+        connectedPeers = []
+        imagesSent = [:]
+        peerRole = nil
+        connectionState = .notConnected
+        if hadPeers { onConnectedPeersChanged?(false) }
     }
 
     private func remember(_ peer: MCPeerID) {
         guard let id = peerInstallIDs[peer] else { return }
-        if let index = knownPeers.firstIndex(where: { $0.id == id }) {
-            knownPeers[index].name = peer.displayName
-        } else {
-            knownPeers.append(KnownPeer(id: id, name: peer.displayName))
-        }
+        // Most recently linked last, so a relaunch knows who it's reconnecting to.
+        knownPeers.removeAll { $0.id == id }
+        knownPeers.append(KnownPeer(id: id, name: peer.displayName))
         saveKnownPeers()
     }
 
