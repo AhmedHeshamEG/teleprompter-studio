@@ -42,6 +42,10 @@ enum CompanionMonitorMode: String, CaseIterable {
 /// as the Director's screen rather than as a separate, smaller app. The camera was previously a
 /// fixed 160pt thumbnail pinned to one corner with no way to change it.
 struct CompanionView: View {
+    /// True while this screen is up. Cleared only by the close button, so a Companion whose app
+    /// was closed (or killed by iOS) reopens as a Companion instead of on the script library.
+    static let resumeKey = "sync.resumeCompanion"
+
     let coordinator: SyncCoordinator
     @Environment(\.dismiss) private var dismiss
 
@@ -154,6 +158,7 @@ struct CompanionView: View {
             applyPlaybackState()
         }
         .onAppear {
+            UserDefaults.standard.set(true, forKey: Self.resumeKey)
             coordinator.setRole(.companion)
             // Entering Companion mode used to start neither the advertiser nor the browser, so a
             // device that hadn't already opened "Connect a Device" could never be found or find
@@ -176,7 +181,13 @@ struct CompanionView: View {
         switch coordinator.connectionState {
         case .connected: return "Connected. Waiting for the Director's script…"
         case .connecting: return "Connecting to the Director…"
-        case .notConnected: return "Looking for a Director on this Wi-Fi network…\n\nOn the other device: Settings → Connect a Device, then tap this device's name."
+        case .notConnected:
+            if let name = coordinator.lastPeerName, coordinator.isReconnecting {
+                return "Reconnecting to \(name)…
+
+Open Teleprompter Studio on \(name). It links back by itself."
+            }
+            return "Looking for a Director on this Wi-Fi network…\n\nOn the other device: Settings → Connect a Device, then tap this device's name."
         }
     }
 
@@ -203,15 +214,17 @@ struct CompanionView: View {
 
     @ViewBuilder
     private var topBarItems: some View {
-        ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) { dismiss() }
+        ChromeButton(systemImage: "xmark", size: Theme.minControlSizeCompact) {
+            UserDefaults.standard.set(false, forKey: Self.resumeKey)
+            dismiss()
+        }
         if !isCompactHeight { Spacer() }
-        Badge(
-            text: coordinator.connectionState == .connected ? "Companion · Linked" : "Companion · Searching",
-            color: coordinator.connectionState == .connected ? Theme.success : Theme.textSecondary,
-            filled: coordinator.connectionState == .connected
-        )
-        if coordinator.remoteIsRecording {
-            RecordingIndicator(isRecording: true, elapsed: coordinator.remoteElapsed)
+        CompanionLinkBadge(coordinator: coordinator)
+        if let startedAt = coordinator.remoteRecordingStartedAt, coordinator.remoteIsRecording {
+            // Counted here from when the take started: the Director only reports the start.
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                RecordingIndicator(isRecording: true, elapsed: context.date.timeIntervalSince(startedAt))
+            }
         }
         if !isCompactHeight { Spacer() }
         // One button, three states: full monitor → corner monitor → off → full. Closing the
@@ -286,6 +299,27 @@ private struct CompanionMonitor: View {
             Badge(text: "Prompter mirror only", color: Theme.textSecondary)
                 .padding(.bottom, 120)
         }
+        }
+    }
+}
+
+/// Link status as the stock apps put it: linked, reconnecting to a named device, or searching.
+/// Reconnecting pulses so a dropped link is noticed without having to read the label.
+private struct CompanionLinkBadge: View {
+    let coordinator: SyncCoordinator
+    @State private var pulse = false
+
+    var body: some View {
+        if coordinator.connectionState == .connected {
+            Badge(text: "Companion · Linked", color: Theme.success, filled: true)
+        } else if coordinator.isReconnecting, let name = coordinator.lastPeerName {
+            Badge(text: "Reconnecting · \(name)", color: Theme.warning)
+                .opacity(pulse ? 0.45 : 1)
+                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+                .onAppear { pulse = true }
+                .onDisappear { pulse = false }
+        } else {
+            Badge(text: "Companion · Searching", color: Theme.textSecondary)
         }
     }
 }

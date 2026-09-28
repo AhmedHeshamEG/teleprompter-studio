@@ -64,10 +64,30 @@ struct PeerDiscoveryView: View {
                                     Spacer()
                                     if coordinator.connectedPeers.contains(peer) {
                                         Badge(text: "Connected", color: Theme.success, filled: true)
+                                    } else if coordinator.isKnown(peer) {
+                                        Badge(text: "Paired", color: Theme.textSecondary)
                                     }
                                 }
                             }
                         }
+                    }
+                }
+
+                if !coordinator.knownPeers.isEmpty {
+                    Section {
+                        ForEach(coordinator.knownPeers) { known in
+                            HStack {
+                                Label(known.name, systemImage: "link")
+                                Spacer()
+                                Button("Forget", role: .destructive) { coordinator.forget(known) }
+                                    .buttonStyle(.borderless)
+                                    .font(.subheadline)
+                            }
+                        }
+                    } header: {
+                        Text("Paired Devices")
+                    } footer: {
+                        Text("Paired devices link up on their own, with no prompt, whenever both have the app open. If one is closed or locked, the link comes back a few seconds after it's reopened.")
                     }
                 }
 
@@ -110,7 +130,9 @@ struct PeerDiscoveryView: View {
         switch coordinator.connectionState {
         case .connected: return "Connected"
         case .connecting: return "Connecting…"
-        case .notConnected: return coordinator.isHosting ? "Looking for devices…" : "Off"
+        case .notConnected:
+            if coordinator.isReconnecting, let name = coordinator.lastPeerName { return "Reconnecting to \(name)…" }
+            return coordinator.isHosting ? "Looking for devices…" : "Off"
         }
     }
 }

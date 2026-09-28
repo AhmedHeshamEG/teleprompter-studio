@@ -144,6 +144,11 @@ final class CameraStudioViewModel {
         syncCoordinator.onConnectedPeersChanged = { [weak self] hasPeers in
             self?.setCompanionStreaming(hasPeers)
         }
+        // Every link that comes up — a second Companion, or the first one coming back after its
+        // app was closed — gets the whole picture again, not just what changes from here on.
+        syncCoordinator.onPeerConnected = { [weak self] _ in
+            self?.publishFullState()
+        }
         videoMultiplexer.add(previewStreamer)
         session.videoDataDelegate = videoMultiplexer
         // Subject detection for Apple's Cinematic path. The output it feeds is only attached to
@@ -185,6 +190,7 @@ final class CameraStudioViewModel {
         guard let syncCoordinator else { return }
         syncCoordinator.onRemoteCommand = nil
         syncCoordinator.onConnectedPeersChanged = nil
+        syncCoordinator.onPeerConnected = nil
     }
 
     /// Companion mirroring is expensive (downscale + JPEG-encode every frame) and was running
@@ -196,11 +202,20 @@ final class CameraStudioViewModel {
         syncFrameTapRequirement()
         if enabled {
             startPlaybackReporting()
-            syncCoordinator?.publishDocument(document, title: script.title)
+            publishFullState()
         } else {
             playbackReportTimer?.invalidate()
             playbackReportTimer = nil
         }
+    }
+
+    /// Script (with its pictures) and the take in progress, for a Companion that just (re)joined.
+    private func publishFullState() {
+        syncCoordinator?.publishDocument(document, title: script.title)
+        syncCoordinator?.publishRecordingState(
+            isRecording: recordingCoordinator.isRecording,
+            elapsed: recordingCoordinator.elapsed
+        )
     }
 
     /// The raw-frame output stays detached from the capture session unless a connected Companion
