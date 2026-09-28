@@ -143,6 +143,8 @@ struct CompanionView: View {
             .animation(Theme.quickSpring, value: chromeVisible)
         }
         .statusBarHidden()
+        // Often the device under the lens: it must not auto-lock mid-take any more than Studio does.
+        .keepsScreenAwake()
         .preferredColorScheme(.dark)
         .peerInviteAlert(coordinator: coordinator)
         .onChange(of: coordinator.latestDocument) { _, newValue in

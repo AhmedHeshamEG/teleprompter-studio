@@ -126,6 +126,15 @@ final class LANHTTPServer {
             return sharedResource(subpath: path)
         }
 
+        // Script pictures, so the laptop preview shows them instead of a broken-image box. The ID
+        // is validated against the exact shape the app generates (`ScriptImageStore.url`), so this
+        // can only ever read a file out of the pictures folder.
+        if path.hasPrefix("/api/images/"), request.method == "GET" {
+            let id = String(path.dropFirst("/api/images/".count))
+            guard let url = ScriptImageStore.url(for: id), let data = try? Data(contentsOf: url) else { return .notFound() }
+            return .file(data: data, contentType: id.hasSuffix(".png") ? "image/png" : "image/jpeg")
+        }
+
         if path == "/api/scripts" {
             switch request.method {
             case "GET":

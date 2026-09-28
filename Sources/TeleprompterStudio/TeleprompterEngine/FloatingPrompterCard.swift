@@ -236,7 +236,7 @@ final class PrompterCardView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        layer.cornerRadius = 14
+        layer.cornerRadius = 20
         layer.cornerCurve = .continuous
         layer.borderWidth = 1
         layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor

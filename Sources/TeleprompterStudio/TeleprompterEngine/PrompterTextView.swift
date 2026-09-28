@@ -27,6 +27,8 @@ struct PrompterTextView: UIViewRepresentable {
     var fontSize: Double
     var lineHeight: Double
     var textColor: UIColor
+    /// Colour of cue lines (`> …` in the script) — stage directions, not lines to read aloud.
+    var cueColor: UIColor
     var marginHorizontalPercent: Double
     var isPlaying: Bool
     var speedPxPerSec: Double
@@ -65,6 +67,7 @@ struct PrompterTextView: UIViewRepresentable {
             fontSize: CGFloat(fontSize),
             lineHeight: CGFloat(lineHeight),
             color: textColor,
+            cueColor: cueColor,
             horizontalInsetPercent: CGFloat(marginHorizontalPercent)
         )
         view.setMirror(horizontal: mirrorHorizontal, vertical: mirrorVertical)
@@ -110,6 +113,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
     private var cachedFontSize: CGFloat = 0
     private var cachedLineHeight: CGFloat = 0
     private var cachedColor: UIColor = .white
+    private var cachedCueColor: UIColor = .white
     private var cachedInsetPercent: CGFloat = 0
     private var lastInsetWidth: CGFloat = 0
     private var lastInsetHeight: CGFloat = 0
@@ -170,6 +174,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
         fontSize: CGFloat,
         lineHeight: CGFloat,
         color: UIColor,
+        cueColor: UIColor,
         horizontalInsetPercent: CGFloat
     ) {
         let insetsChanged = cachedInsetPercent != horizontalInsetPercent
@@ -178,6 +183,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
             && cachedFontSize == fontSize
             && cachedLineHeight == lineHeight
             && cachedColor == color
+            && cachedCueColor == cueColor
             && !insetsChanged
         guard !unchanged else { return }
 
@@ -187,6 +193,7 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
         cachedFontSize = fontSize
         cachedLineHeight = lineHeight
         cachedColor = color
+        cachedCueColor = cueColor
         cachedInsetPercent = horizontalInsetPercent
 
         let font = PrompterFonts.uiFont(named: fontName, size: fontSize)
@@ -197,17 +204,103 @@ final class PrompterScrollView: UITextView, UITextViewDelegate {
         // at.
         paragraph.lineSpacing = max(0, (lineHeight - 1) * font.lineHeight)
         paragraph.alignment = .left
-        attributedText = NSAttributedString(
-            string: text.isEmpty ? " " : text,
-            attributes: [
-                .font: font,
-                .foregroundColor: color,
-                .paragraphStyle: paragraph,
-            ]
+        attributedText = Self.typeset(
+            text.isEmpty ? " " : text,
+            font: font,
+            color: color,
+            cueColor: cueColor,
+            paragraph: paragraph
         )
         lastInsetWidth = 0 // force the insets to be recomputed on the next layout pass
         setNeedsLayout()
         if textChanged { jumpToTop() }
+    }
+
+    /// The script as the reader sees it: plain lines, **cue lines** (`> Hold up the book`) set
+    /// smaller in the cue colour so a stage direction never reads as a line to say, and script
+    /// pictures (see `ScriptImageMarkup`) laid out inline, centred, where they were placed.
+    private static func typeset(
+        _ text: String,
+        font: UIFont,
+        color: UIColor,
+        cueColor: UIColor,
+        paragraph: NSParagraphStyle
+    ) -> NSAttributedString {
+        let base: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+        ]
+        let cueParagraph = (paragraph.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        cueParagraph.paragraphSpacingBefore = font.lineHeight * 0.2
+        let cue: [NSAttributedString.Key: Any] = [
+            .font: font.withSize(max(14, font.pointSize * 0.62)),
+            .foregroundColor: cueColor,
+            .paragraphStyle: cueParagraph,
+        ]
+        let pictureParagraph = (paragraph.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+        pictureParagraph.alignment = .center
+        pictureParagraph.paragraphSpacing = font.lineHeight * 0.3
+
+        let result = NSMutableAttributedString()
+        let lines = text.components(separatedBy: "
+")
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(">") {
+                let body = trimmed.drop(while: { $0 == ">" || $0 == " " })
+                result.append(NSAttributedString(string: String(body), attributes: cue))
+            } else {
+                appendLine(line, to: result, base: base, pictureParagraph: pictureParagraph)
+            }
+            if index < lines.count - 1 {
+                result.append(NSAttributedString(string: "
+", attributes: base))
+            }
+        }
+        return result
+    }
+
+    private static func appendLine(
+        _ line: String,
+        to result: NSMutableAttributedString,
+        base: [NSAttributedString.Key: Any],
+        pictureParagraph: NSParagraphStyle
+    ) {
+        let matches = ScriptImageMarkup.matches(in: line)
+        guard !matches.isEmpty else {
+            result.append(NSAttributedString(string: line, attributes: base))
+            return
+        }
+        let ns = line as NSString
+        let lineStart = result.length
+        var cursor = 0
+        for match in matches {
+            if match.range.location > cursor {
+                let segment = ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+                result.append(NSAttributedString(string: segment, attributes: base))
+            }
+            // A picture whose file is gone (a script synced from another device, say) is left out
+            // rather than drawn as a broken box or as its raw link.
+            if let image = ScriptImageStore.image(for: match.id) {
+                let attachment = ScriptImageAttachment(imageID: match.id, image: image, boxAspect: 0.75)
+                let piece = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+                piece.addAttributes(base, range: NSRange(location: 0, length: piece.length))
+                result.append(piece)
+            }
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < ns.length {
+            result.append(NSAttributedString(string: ns.substring(from: cursor), attributes: base))
+        }
+        // A line that is only a picture gets centred; one mixed into a sentence stays inline.
+        if ScriptImageMarkup.strippingImages(from: line).trimmingCharacters(in: .whitespaces).isEmpty {
+            result.addAttribute(
+                .paragraphStyle,
+                value: pictureParagraph,
+                range: NSRange(location: lineStart, length: result.length - lineStart)
+            )
+        }
     }
 
     func setMirror(horizontal: Bool, vertical: Bool) {

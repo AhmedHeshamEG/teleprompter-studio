@@ -11,11 +11,11 @@ struct ChromeButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: size * 0.42, weight: .semibold))
+                .font(.system(size: size * 0.40, weight: .semibold))
                 .foregroundStyle(foregroundColor)
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: size, height: size)
-                .background(backgroundColor, in: Circle())
-                .overlay(Circle().stroke(Theme.border, lineWidth: 1))
+                .chromeGlass(in: Circle(), tint: tintColor)
                 // The touch target is at least 48pt and the hit shape is declared on the *label*,
                 // inside the Button. Declaring it outside (as this did) doesn't widen what the
                 // button actually accepts, so the compact 44pt variants had genuinely small,
@@ -32,9 +32,49 @@ struct ChromeButton: View {
         return isActive ? .black : Theme.textPrimary
     }
 
-    private var backgroundColor: Color {
+    /// Plain glass at rest; tinted when switched on, like the stock Camera app's controls.
+    private var tintColor: Color? {
         if isDestructive { return Theme.record }
-        return isActive ? Theme.accent : Color.black.opacity(0.45)
+        return isActive ? Theme.accent : nil
+    }
+}
+
+/// The record button, shaped like the stock Camera app's: a white ring around a red dot that becomes a
+/// rounded square while recording. Shared by Studio (video) and Voice.
+struct RecordButton: View {
+    let isRecording: Bool
+    /// Countdown is running: the button pulses so the tap clearly registered, and tapping again
+    /// calls the take off instead of doing nothing for three seconds.
+    var isArmed: Bool = false
+    let action: () -> Void
+
+    @State private var pulse = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .stroke(isArmed ? Theme.accent : Color.white, lineWidth: 4)
+                    .frame(width: 76, height: 76)
+                RoundedRectangle(cornerRadius: isRecording ? 8 : 30)
+                    .fill(Theme.record)
+                    .frame(width: isRecording ? 30 : 60, height: isRecording ? 30 : 60)
+                    .opacity(isArmed && pulse ? 0.35 : 1)
+                    .animation(Theme.quickSpring, value: isRecording)
+            }
+            // The 76pt ring is the visual; this is the touch target, so the edges of the button
+            // aren't dead zones.
+            .frame(width: 88, height: 88)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onChange(of: isArmed) { _, armed in
+            if armed {
+                withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { pulse = true }
+            } else {
+                withAnimation(.default) { pulse = false }
+            }
+        }
     }
 }
 
@@ -46,21 +86,21 @@ struct RecordingIndicator: View {
 
     var body: some View {
         if isRecording {
-            HStack(spacing: Theme.spacingS) {
+            // The stock Camera app's take timer: white timecode on a red pill.
+            HStack(spacing: 6) {
                 Circle()
-                    .fill(Theme.record)
-                    .frame(width: 10, height: 10)
-                    .opacity(pulse ? 0.35 : 1)
+                    .fill(.white)
+                    .frame(width: 6, height: 6)
+                    .opacity(pulse ? 0.3 : 1)
                     .animation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true), value: pulse)
                 Text(elapsed.asTimecode)
-                    .font(.system(.body, design: .monospaced).weight(.semibold))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
                     .monospacedDigit()
             }
-            .padding(.horizontal, Theme.spacingM)
-            .padding(.vertical, Theme.spacingS)
-            .background(Color.black.opacity(0.55), in: Capsule())
-            .overlay(Capsule().stroke(Theme.record.opacity(0.6), lineWidth: 1))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Theme.record, in: Capsule())
             .onAppear { pulse = true }
         }
     }
@@ -143,8 +183,7 @@ struct Badge: View {
             .padding(.horizontal, Theme.spacingS)
             .padding(.vertical, 3)
             .foregroundStyle(filled ? .black : color)
-            .background(filled ? color : color.opacity(0.16), in: Capsule())
-            .overlay(Capsule().stroke(color.opacity(filled ? 0 : 0.5), lineWidth: 1))
+            .background(filled ? color : Color.black.opacity(0.35), in: Capsule())
     }
 }
 

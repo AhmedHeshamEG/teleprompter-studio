@@ -3,20 +3,25 @@ import SwiftUI
 /// Central design tokens for Teleprompter Studio: dark, high-contrast, camera-first.
 enum Theme {
     // MARK: Colors
+    //
+    // Apple's own dark palette (the values iOS uses for systemBackground, secondarySystemBackground,
+    // systemYellow, systemRed… in dark mode), so the custom chrome sits next to the system's Liquid
+    // Glass bars and sheets without looking like it came from a different app.
 
-    static let background = Color(red: 0.043, green: 0.043, blue: 0.055)      // #0B0B0E
-    static let surface = Color(red: 0.086, green: 0.086, blue: 0.102)         // #16161A
-    static let surfaceElevated = Color(red: 0.125, green: 0.125, blue: 0.145) // #202025
-    static let border = Color.white.opacity(0.08)
+    static let background = Color.black
+    static let surface = Color(red: 0.110, green: 0.110, blue: 0.118)         // #1C1C1E
+    static let surfaceElevated = Color(red: 0.173, green: 0.173, blue: 0.180) // #2C2C2E
+    static let border = Color.white.opacity(0.10)
 
-    /// The single restrained accent color used across the whole app.
-    static let accent = Color(red: 1.0, green: 0.549, blue: 0.102)            // #FF8C1A amber
-    static let record = Color(red: 0.95, green: 0.20, blue: 0.20)             // recording red
-    static let success = Color(red: 0.30, green: 0.85, blue: 0.55)
+    /// The single accent: the yellow the stock Camera app uses for anything that's switched on
+    /// (and Notes uses for its tint).
+    static let accent = Color(red: 1.0, green: 0.839, blue: 0.039)            // #FFD60A
+    static let record = Color(red: 1.0, green: 0.271, blue: 0.227)            // #FF453A
+    static let success = Color(red: 0.188, green: 0.820, blue: 0.345)         // #30D158
     /// Advisory, not failure: a condition the shot can still be taken under (the system asking for
-    /// more light during a Cinematic take, say). Distinct from `accent` so a warning doesn't read
-    /// as just another piece of chrome.
-    static let warning = Color(red: 1.0, green: 0.78, blue: 0.30)
+    /// more light during a Cinematic take, say). Orange, so a warning doesn't read as just another
+    /// switched-on control in accent yellow.
+    static let warning = Color(red: 1.0, green: 0.624, blue: 0.039)           // #FF9F0A
 
     static let textPrimary = Color.white
     static let textSecondary = Color.white.opacity(0.62)
@@ -25,8 +30,8 @@ enum Theme {
     // MARK: Metrics
 
     static let cornerRadiusSmall: CGFloat = 8
-    static let cornerRadiusMedium: CGFloat = 14
-    static let cornerRadiusLarge: CGFloat = 22
+    static let cornerRadiusMedium: CGFloat = 16
+    static let cornerRadiusLarge: CGFloat = 24
 
     /// Minimum thumb-reachable control edge, per spec: "large thumb-reachable controls".
     static let minControlSize: CGFloat = 52
@@ -48,4 +53,26 @@ extension ShapeStyle where Self == Color {
     static var themeBackground: Color { Theme.background }
     static var themeSurface: Color { Theme.surface }
     static var themeAccent: Color { Theme.accent }
+}
+
+extension View {
+    /// Floating chrome over the camera or the script: Liquid Glass on iOS 26, the system's thin
+    /// material before it. `tint` colours the glass for a switched-on control.
+    @ViewBuilder
+    func chromeGlass<S: Shape>(in shape: S, tint: Color? = nil, interactive: Bool = true) -> some View {
+        if #available(iOS 26.0, *) {
+            let base: Glass = tint.map { Glass.regular.tint($0) } ?? .regular
+            self.glassEffect(interactive ? base.interactive() : base, in: shape)
+        } else {
+            self
+                .background {
+                    if let tint {
+                        shape.fill(tint)
+                    } else {
+                        shape.fill(.ultraThinMaterial)
+                    }
+                }
+                .overlay(shape.stroke(Theme.border, lineWidth: 1))
+        }
+    }
 }
