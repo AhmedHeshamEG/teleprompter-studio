@@ -34,7 +34,7 @@ let package = Package(
             ],
             // Swift 6 tools/syntax, but Swift 5 language mode: relaxed (non-strict) actor
             // isolation checking, matching how most shipping iOS apps build today. See
-            // BUILD_NOTES.md "Concurrency" for the handful of spots that were written with
+            // docs/NOTES.md "Threads" for the handful of spots that were written with
             // strict-mode discipline anyway (explicit main-actor hops via Task/DispatchQueue).
             swiftSettings: [
                 .swiftLanguageMode(.v5)
